@@ -5,6 +5,13 @@ build/
 dist/
 wheels/
 *.egg-info
+/venv
+/.venv
 
 # Virtual environments
 .venv
+
+# testing
+/.coverage
+/.python-version
+/testing

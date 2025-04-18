@@ -1,78 +1,44 @@
 import argparse
 import csv
-import itertools
+import sys
+import json
+from enum import Enum
+from typing import Literal
 from pathlib import Path
+from . import database
+from . import csv_tools
+import difflib
+from pathlib import Path
+from .utils import match_filters
 
-import rich
-from rich.console import Console, Group
+from rich import box
+from rich.console import Console
 from rich.table import Table
-from rich.text import Text
-from rich.panel import Panel
-from rich import prompt
 
-TRANSACTION_FIELDS = ["date", "description", "amount", "account", "category"]
-DEFAULT_TRANSACTION_FIELD_NAMES = [
-    "Date",
-    "Decription",
-    "Amount",
-    "Account",
-    "Category",
-]
-DEFAULT_TRANSACTION_FIELD_NAMES_MAP = {
-    f.lower(): f for f in DEFAULT_TRANSACTION_FIELD_NAMES
-}
-
-DEFAULT_CATGORIES_FIELD_NAMES = ["Name", "Type", "Goal"]
-DEFAULT_CATGORIES_FIELD_NAMES_MAP = {
-    f.lower(): f for f in DEFAULT_CATGORIES_FIELD_NAMES
-}
+DATA_FILE_NAME = 'pyb_transactions.csv'
+CONFIG_FILE_NAME = 'pyb_config.json'
+TRANSACTION_FIELDS = ['date', 'description', 'amount', 'account', 'category']
 
 
-def __validate_txn(txn: dict, category_names: set):
-    pass
+class OutputFormat(Enum):
+    DEFAULT = 'default'
+    TABLE = 'table'
+    CSV = 'csv'
 
 
-def __read_transactions_csv(csv_path: Path, column_names=None, default_values=None):
-    column_names = column_names or {}
-    default_values = default_values or {}
-    with open(csv_path, newline="") as csvfile:
-        reader = csv.DictReader(csvfile)
-        normalized_row = {}
-        for row in reader:
-            for field in TRANSACTION_FIELDS:
-                if column_names.get(field):
-                    col_name = column_names[field]
-                    normalized_row[field] = row[col_name]
-                else:
-                    if row.get(field):
-                        normalized_row[field] = row[field]
-                    elif row.get(field.title()):
-                        normalized_row[field] = row[field.title()]
-
-                if field not in normalized_row and field in default_values:
-                    normalized_row[field] = default_values[field]
-
-            required_fields = set(TRANSACTION_FIELDS) - set(["category"])
-            actual_fields = set(normalized_row.keys())
-            missing_fields = required_fields - actual_fields
-            if missing_fields:
-                raise ValueError(
-                    f"Expected to receive column names or defaults for {csv_path}. Missing field {missing_fields}"
-                )
-            # transform amount to float
-            # normalized_row['amount'] = float(normalized_row['amount'])
-            # TODO validate date is in correct format: date, category exists or is unassigned or empty
-            yield dict(normalized_row)
+class OutputLocation(Enum):
+    STDOUT = 'stdout'
+    FILE = 'file'
 
 
 def __create_transactions_table() -> Table:
-    table = Table(show_header=True, title="Transactions")
-    # TODO make sure order is the same as TRANSACTIONS_HEADER
-    table.add_column("Date", width=12)
-    table.add_column("Description")
-    table.add_column("Amount", justify="right")
-    table.add_column("Account", justify="right")
-    table.add_column("Category")
+    table = Table(show_header=True, box=box.MARKDOWN, title='Transactions')
+    table.add_column('ID', no_wrap=True)
+    table.add_column('Date', no_wrap=True, width=12)
+    table.add_column('Description', no_wrap=True)
+    table.add_column('Amount', no_wrap=True, justify='right')
+    table.add_column('Account', no_wrap=True, justify='right')
+    table.add_column('Category', no_wrap=True)
     return table
 
 
@@ -80,317 +46,473 @@ def __dict_to_ordered_values(d: dict, keys: list):
     return list(map(lambda k: d[k], keys))
 
 
-def cmd_list_transactions(args):
-    table = __create_transactions_table()
-    for row in __read_transactions_csv(args.transactions):
-        row["amount"] = "{0:.2f}".format(float(row["amount"]))
-        values = __dict_to_ordered_values(row, TRANSACTION_FIELDS)
-        table.add_row(*values)
-
-    console = Console()
-    console.print(table)
-
-    print(f"Listing transactions from {args.transactions}")
-
-
-def cmd_edit_transaction(args):
-    print(f"Editing transaction in {args.transactions}: {args.transaction_id}")
+def handle_list_transactions(args):
+    list_transactions(
+        args.data,
+        args.config,
+        None,
+        only_uncategorized=args.uncategorized,
+        output_format=args.output_format,
+        output_path=args.output_file,
+        suggest_categories=args.suggest_categories,
+    )
 
 
-def cmd_delete_transaction(args):
-    print(f"Deleting transaction in {args.transactions}: {args.transaction_id}")
+def list_transactions(
+    data_path: Path,
+    config_path: Path,
+    filters: list[str],
+    only_uncategorized=False,
+    output_format: OutputFormat = None,
+    output_path: Path = None,
+    suggest_categories: bool = False,
+):
+    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    config = load_config(config_path)
 
-
-def cmd_categorize_transactions(args):
-    print(f"Assigning categories in {args.transactions} using {args.categories}")
-
-
-def cmd_import_transactions(args):
-    print(f"Importing transactions from {args.import_paths} into {args.transactions}")
-    # build up column names mapping
-    column_names = {}
-    if args.date_column:
-        column_names["date"] = args.date_column
-    if args.desc_column:
-        column_names["description"] = args.desc_column
-    if args.amount_column:
-        column_names["amount"] = args.amount_column
-    if args.account_column:
-        column_names["account"] = args.account_column
-    if args.category_column:
-        column_names["category"] = args.category_column
-    # build up defaults
-    default_values = {}
-    if args.account_value:
-        default_values["account"] = args.account_value
-    if args.category_value:
-        default_values["category"] = args.category_value
-
-    if args.transactions.is_file():
-        existing_transactions = [r for r in __read_transactions_csv(args.transactions)]
-    else:
-        existing_transactions = []
-    new_transactions = []
-    for import_path in args.import_paths:
-        for row in __read_transactions_csv(
-            import_path, column_names=column_names, default_values=default_values
-        ):
-            if args.flip_sign:
-                orig_amount = float(row['amount'])
-                row['amount'] = "{0:.2f}".format(-1 * orig_amount)
-            new_transactions.append(row)
-
-    # sort transactions
-    new_transactions = __sort_transactions(new_transactions)
-
-    # print new transactions
-    console = Console()
-    table = __create_transactions_table()
-    for txn in new_transactions:
-        values = __dict_to_ordered_values(txn, TRANSACTION_FIELDS)
-        table.add_row(*values)
-    console.print(table)
-
-    # find duplicates in existing transactions
-    duplicates = []
-    for txn in new_transactions:
-        if txn in existing_transactions:
-            duplicates.append(txn)
-
-    if duplicates:
-        table = __create_transactions_table()
-        table.title = 'Duplicates With Existing'
-        for txn in duplicates:
-            values = __dict_to_ordered_values(txn, TRANSACTION_FIELDS)
-            table.add_row(*values)
-        console.print(table)
-    # summarize output
-    def get_month(txn):
-        return txn['date'][:7]
-    # NOTE it should already be sorted from above
-    transactions_by_month = {}
-    for k, g in itertools.groupby(new_transactions, key=get_month):
-        if k not in transactions_by_month:
-            transactions_by_month[k] = []
-        transactions_by_month[k].extend(list(g))
-
-    # find count by month
-    month_counts = {k:len(v) for k,v in transactions_by_month.items()}
-    months = list(map(lambda e: f'({e[1]}) {e[0]}', sorted(month_counts.items(), key=lambda x: x[0])))
-
-    summary_text = Text("Import Summary", justify="center")
-    console.print(
-        Panel(
-            Group(
-                summary_text,
-                Text(f"Transactions: {len(new_transactions)}"),
-                Text(f"Months: {', '.join(months)}"),
-                Text(f"Duplicates: {len(duplicates)} (Already in existing transactions)"),
+    # set the final output format variables
+    to_file = output_path and output_path != '-'
+    if to_file:
+        if output_format == OutputFormat.TABLE:
+            raise ValueError(
+                f'Cannot output format "{output_format.value}" to file path {output_path}. Please remove the --output-format argument to output as CSV to the file.'
             )
+        elif output_format == OutputFormat.DEFAULT:
+            output_format = OutputFormat.CSV
+    else:
+        if output_format == OutputFormat.DEFAULT:
+            output_format = OutputFormat.TABLE
+
+    columns = ['id', *TRANSACTION_FIELDS]
+    if suggest_categories:
+        columns.append('suggested_category')
+
+    # TODO order by date by default
+    # TODO do not keep all results in memory, use generator
+    row_dicts = []
+    for t in transactions_csv.read_many():
+        if only_uncategorized and t.category:
+            continue
+        dict_values = t.to_row()
+        if suggest_categories:
+            dict_values['suggested_category'] = 'asdf'
+        row_dicts.append(dict_values)
+
+    if output_format == OutputFormat.TABLE:
+        output_rows_to_table(row_dicts, columns)
+    elif output_format == OutputFormat.CSV:
+        output_rows_as_csv(row_dicts, columns, output_path)
+    else:
+        raise ValueError(f'Unrecognized output format: {output_format.value}')
+
+
+def output_rows_to_table(row_dicts: list[dict], columns: list[str]):
+    console = Console()
+    table = __create_transactions_table()
+    if 'suggested_category' in columns:
+        table.add_column('Suggested', no_wrap=True)
+    for row_dict in row_dicts:
+        values = __dict_to_ordered_values(row_dict, columns)
+        table.add_row(*values)
+
+    console.print(table)
+
+
+def output_rows_as_csv(row_dicts: list[dict], columns: list[str], output_path: Path):
+    to_stdout = not output_path or output_path == '-'
+    output_file = sys.stdout if to_stdout else open(output_path, 'w')
+    try:
+        csv_writer = csv.DictWriter(output_file, fieldnames=columns)
+        csv_writer.writeheader()
+        for row_dict in row_dicts:
+            csv_writer.writerow(row_dict)
+    finally:
+        if not to_stdout and output_file:
+            output_file.close()
+
+
+def edit_transactions(
+    data_path: Path, config_path: Path, from_path: Path | Literal['-']
+):
+    updates = {}
+    if args.from_path == '-':
+        txns = csv.reader(sys.stdin)
+    else:
+        txns = read_transactions_from_csv(from_path)
+
+    for row in rows:
+        if len(row) >= 2:
+            row_id, category = row[0], row[1]
+            updates[row_id] = {'category': category}
+
+    updated_ids = lcsv.batch_update(updates)
+    print(f'Updated {len(updated_ids)} transactions.')
+
+
+def handle_edit_transaction(args):
+    print(f'Editing transaction in {args.transactions}: {args.transaction_id}')
+    edit_transactions(args.data, args.config, args.from_path)
+
+
+def handle_delete_transaction(args):
+    print(f'Deleting transaction in {args.transactions}: {args.transaction_id}')
+
+
+def handle_categorize_transactions(args):
+    db_conn = database.init_db(args.data)
+    config = load_config(args.config)
+    database.categorize_uncategorized_transactions(db_conn)
+
+
+def find_importer(p: Path, importers: list):
+    """Find an importer for the given csv path"""
+    matching_importer = None
+    for importer in importers:
+        if not importer.get('matcher'):
+            print(f'Importer named "{importer["name"]}" has no matcher criteria')
+            continue
+        passed_matcher = True
+        for criteria, value in importer.get('matcher', {}).items():
+            if criteria == 'filenameContains':
+                if value not in p.name:
+                    passed_matcher = False
+                    break
+            elif criteria == 'headers':
+                # TODO handle custom delimiter
+                with open(p) as f:
+                    header_line = f.readline()
+                for col in value:
+                    if col not in header_line:
+                        passed_matcher = False
+                        break
+            else:
+                raise ValueError(f'Unrecognized matcher criteria: {criteria}')
+        if passed_matcher:
+            matching_importer = importer
+            break
+    return matching_importer
+
+
+def handle_import_transactions(args):
+    import_transactions(
+        args.data, args.config, args.csv_paths, importer_name=args.importer
+    )
+
+
+def import_transactions(
+    data_path: Path, config_path: Path, csv_paths: list[Path], importer_name: str = None
+):
+    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    config = load_config(config_path)
+    importers = config.get('importers')
+    # TODO arg to pass importer name directly
+    new_transactions = []
+    named_importer = None
+    if importer_name:
+        named_importer = next(
+            (x for x in importers if x['name'] == importer_name), None
         )
-    )
-    do_import = prompt.Confirm.ask(f'Import all {len(new_transactions)} transactions?')
-    if do_import:
-        existing_transactions.extend(new_transactions)
-        __write_transactions_to_file(existing_transactions, args.transactions)
-        console.print(Text('Done!'))
-    # console.print()
+        if not named_importer:
+            raise ValueError(f'Failed to find importer by name "{importer_name}"')
+    for p in csv_paths:
+        # find matching importer or use named one
+        matching_importer = (
+            named_importer if named_importer else find_importer(p, importers)
+        )
+        if matching_importer:
+            print(f'Using "{matching_importer["name"]}" importer')
+        else:
+            raise ValueError(
+                'Failed to find a matching importer. Please check your importers conditions and try again.'
+            )
 
-def __sort_transactions(transactions: list) -> list:
-    return sorted(transactions, key=lambda r: (r['date'], r['description']))
+        # get column name mapping for importer
+        column_names = {
+            'date': matching_importer.get('dateColumn', 'Transaction Date'),
+            'description': matching_importer.get('descriptionColumn', 'Description'),
+            'amount': matching_importer.get('amountColumn', 'Amount'),
+            'account': matching_importer.get('accountColumn', 'Account'),
+            'category': matching_importer.get('categoryColumn', None),
+        }
+        # get default value mapping for importer
+        default_values = {
+            'date': matching_importer.get('dateValue'),
+            'description': matching_importer.get('descriptionValue'),
+            'amount': matching_importer.get('amountValue'),
+            'account': matching_importer.get('accountValue'),
+            'category': matching_importer.get('categoryValue'),
+        }
+        transactions_in_file = []
+        for transaction in csv_tools.read_transactions_from_csv(
+            p, column_names=column_names, default_values=default_values
+        ):
+            if matching_importer.get('flipSign'):
+                transaction.amount = -1 * transaction.amount
 
-def __write_transactions_to_file(all_transactions: list, output_file_path):
-    all_transactions = __sort_transactions(all_transactions)
-    with open(output_file_path, 'w') as output_file:
-        dict_writer = csv.DictWriter(output_file, TRANSACTION_FIELDS)
-        dict_writer.writeheader()
-        dict_writer.writerows(all_transactions)
-        
-def cmd_new_transaction(args):
-    print(f"Adding a new transaction to {args.transactions}")
+            transactions_in_file.append(transaction)
+        transactions_csv.add(*transactions_in_file)
+        print(f'Successfully imported {p}')
 
 
-def cmd_list_categories(args):
-    print(f"Listing categories from {args.categories}")
+def handle_new_transaction(args):
+    print(f'Adding a new transaction to {args.transactions}')
 
 
-def cmd_new_category(args):
-    print(f"Creating a new category in {args.categories}")
+def handle_list_categories(args):
+    # print(f"Listing categories from {args.categories}")
+    config = load_config(args.config)
+    if not config.get('categories'):
+        print(
+            'There are no categories in your config file. You can add them manually or with "pybudget categories new"'
+        )
+    for c in config.get('categories'):
+        print(f'Category: {c["name"]}')
+        print(f'Type: {c["type"]}')
+        print(f'Goal: {c["goal"]}')
+        print()
 
 
-def cmd_generate_report(args):
+def handle_new_category(args):
+    print(f'Creating a new category in {args.categories}')
+
+
+def handle_generate_report(args):
     print(
-        f"Generating {args.type} report for {args.period} using transactions from {args.transactions}"
+        f'Generating {args.type} report for {args.period} using transactions from {args.transactions}'
     )
 
 
-def cmd_backup(args):
-    print(f"Creating a backup at {args.destination}")
+def handle_backup(args):
+    print(f'Creating a backup at {args.destination}')
 
 
 def existing_file(p):
     p = Path(p)
     if p.is_file():
         return p
-    raise argparse.ArgumentTypeError(f"{p} must be an existing file path")
+    raise argparse.ArgumentTypeError(f'{p} must be an existing file path')
+
+
+def existing_json_file(p):
+    p = existing_file(p)
+    return json.loads(p.read_text())
+
+
+def load_config(p):
+    default_config = {
+        'categories': [],
+        'importers': [],
+    }
+    actual = existing_json_file(p)
+    return {**default_config, **actual}
+
+
+def handle_categorize(args):
+    csv_path = args.data
+    lcsv = database.LargeCSV(csv_path)
+    filters = extract_filters(args)
+
+    # First pass: collect categorized transactions
+    categorized = []
+    with open(csv_path, newline='') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row.get('category'):
+                categorized.append(row)
+
+    # Second pass: filter uncategorized and suggest
+    if args.suggest:
+        with (
+            open(args.suggest, 'w', newline='') as out_f,
+            open(csv_path, newline='') as in_f,
+        ):
+            reader = csv.DictReader(in_f)
+            writer = csv.writer(out_f)
+            writer.writerow(['id', 'description', 'suggested_category'])  # header
+            for row in reader:
+                if row.get('category'):
+                    continue
+                if not match_filters(row, filters):
+                    continue
+                desc = row['description']
+                match = difflib.get_close_matches(
+                    desc, [t['description'] for t in categorized], n=1
+                )
+                suggested = (
+                    next(
+                        (
+                            t['category']
+                            for t in categorized
+                            if t['description'] == match[0]
+                        ),
+                        '',
+                    )
+                    if match
+                    else ''
+                )
+                writer.writerow([row['id'], desc, suggested])
+
+    # Apply phase
+    elif args.apply:
+        updates = {}
+
+        if args.apply == '-':
+            rows = csv.reader(sys.stdin)
+        else:
+            with open(args.apply, newline='') as f:
+                rows = csv.reader(f)
+                next(rows, None)  # skip header if present
+
+        for row in rows:
+            if len(row) >= 2:
+                row_id, category = row[0], row[1]
+                updates[row_id] = {'category': category}
+
+        updated_ids = lcsv.batch_update(updates)
+        print(f'Updated {len(updated_ids)} transactions.')
+
+
+def parse_args(system_args):
+    parser = argparse.ArgumentParser(description='pybudget CLI')
+    parser.set_defaults(func=lambda args: parser.print_help())
+    parser.add_argument(
+        '--data',
+        type=Path,
+        default=Path.cwd() / DATA_FILE_NAME,
+        help='Path to the transactions CSV',
+    )
+    parser.add_argument(
+        '--config',
+        type=Path,
+        default=Path.cwd() / CONFIG_FILE_NAME,
+        help='Path to the config file',
+    )
+
+    subparsers = parser.add_subparsers(dest='command')
+
+    # Import group
+    import_parser = subparsers.add_parser('import', help='Import data')
+    import_sub = import_parser.add_subparsers(dest='import_target', required=True)
+
+    import_transactions = import_sub.add_parser(
+        'transactions', help='Import transactions'
+    )
+    import_transactions.add_argument(
+        'csv_paths', nargs='+', type=Path, help='Path(s) to CSV files to import'
+    )
+    import_transactions.add_argument(
+        '--importer', help='Name of the importer defined in config.json'
+    )
+    import_transactions.set_defaults(func=handle_import_transactions)
+
+    # List command
+    list_parser = subparsers.add_parser('list', help='list data')
+    list_sub = list_parser.add_subparsers(dest='list_target', required=True)
+
+    list_transactions = list_sub.add_parser(
+        'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
+    )
+    # TODO Implement filters
+    # list_transactions.add_argument(
+    #     "--filter", nargs="+", type=Path, dest='filters', help="Filter using expressions like --filter field<op>value"
+    # )
+    list_transactions.add_argument(
+        '--uncategorized',
+        action='store_true',
+        help='A filter to only show uncategorized transactions',
+    )
+    list_transactions.add_argument(
+        '-s',
+        '--suggest-categories',
+        action='store_true',
+        help='Add a column for suggested categories for the uncategorized',
+    )
+    list_transactions.add_argument(
+        '-f',
+        '--output-format',
+        choices=list(OutputFormat),
+        type=OutputFormat,
+        default=OutputFormat.DEFAULT,
+        help='The format of the output. If an output file is specified, this option is ignored and CSV format is used.',
+    )
+    list_transactions.add_argument(
+        '-o',
+        '--output-file',
+        type=Path,
+        help='The file to output to instead of stdout. File will be in CSV format.',
+    )
+
+    list_transactions.set_defaults(func=handle_list_transactions)
+
+    # Edit command
+    edit_parser = subparsers.add_parser('edit', help='Edit a transaction')
+    edit_parser.add_argument('transaction_id', help='ID of the transaction to edit')
+    edit_parser.add_argument('--amount', type=float)
+    edit_parser.add_argument('--description')
+    edit_parser.add_argument('--date')
+    edit_parser.add_argument('--account')
+    edit_parser.add_argument('--category')
+    edit_parser.add_argument(
+        '--from', dest='from_path', help='Apply edits from either a file or from stdin'
+    )
+    edit_parser.set_defaults(func=handle_edit_transaction)
+
+    # Categorize command
+    categorize_parser = subparsers.add_parser(
+        'categorize', help='Suggest or apply categories to uncategorized transactions'
+    )
+
+    # Suggest/Apply
+    group = categorize_parser.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        '--suggest',
+        action='store_true',
+        help='Output uncategorized transactions with suggested categories to a file',
+    )
+    group.add_argument(
+        '--apply', action='store_true', help='Apply categories from a file or stdin'
+    )
+
+    categorize_parser.add_argument(
+        '--output', type=Path, help='Output file for --suggest'
+    )
+    categorize_parser.add_argument('--input', type=Path, help='Input file for --apply')
+    categorize_parser.add_argument(
+        '--data',
+        type=Path,
+        default=Path.cwd() / 'pyb_transactions.csv',
+        help='Path to the transactions CSV',
+    )
+    categorize_parser.add_argument(
+        '--config',
+        type=Path,
+        default=Path.cwd() / 'config.json',
+        help='Path to config file',
+    )
+
+    # Date filters
+    categorize_parser.add_argument(
+        '--start-date', type=str, help='Filter by start date (YYYY-MM-DD)'
+    )
+    categorize_parser.add_argument(
+        '--end-date', type=str, help='Filter by end date (YYYY-MM-DD)'
+    )
+
+    # Field filters
+    categorize_parser.add_argument(
+        '--description', type=str, help='Filter by substring in description'
+    )
+    categorize_parser.add_argument('--account', type=str, help='Filter by account name')
+    categorize_parser.add_argument('--category', type=str, help='Filter by category')
+    categorize_parser.set_defaults(func=handle_categorize)
+
+    return parser.parse_args(system_args)
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        prog="pybudget", description="Simple Budget & Expense Tracker"
-    )
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # Transactions group
-    transactions_parser = subparsers.add_parser(
-        "transactions", help="Manage transactions"
-    )
-    transactions_subparsers = transactions_parser.add_subparsers(
-        dest="action", required=True
-    )
-
-    list_parser = transactions_subparsers.add_parser("list", help="List transactions")
-    list_parser.add_argument(
-        "transactions", type=existing_file, help="Path to transactions CSV file"
-    )
-    list_parser.set_defaults(func=cmd_list_transactions)
-
-    edit_parser = transactions_subparsers.add_parser("edit", help="Edit a transaction")
-    edit_parser.add_argument(
-        "transactions", type=Path, help="Path to transactions CSV file"
-    )
-    edit_parser.add_argument("transaction_id", help="ID of the transaction to edit")
-    edit_parser.set_defaults(func=cmd_edit_transaction)
-
-    delete_parser = transactions_subparsers.add_parser(
-        "delete", help="Delete a transaction"
-    )
-    delete_parser.add_argument(
-        "transactions", type=Path, help="Path to transactions CSV file"
-    )
-    delete_parser.add_argument("transaction_id", help="ID of the transaction to delete")
-    delete_parser.set_defaults(func=cmd_delete_transaction)
-
-    categorize_parser = transactions_subparsers.add_parser(
-        "categorize", help="Categorize transactions"
-    )
-    categorize_parser.add_argument(
-        "transactions", type=Path, help="Path to transactions CSV file"
-    )
-    categorize_parser.add_argument(
-        "-c",
-        "--categories",
-        type=Path,
-        required=True,
-        help="Path to categories CSV file",
-    )
-    categorize_parser.set_defaults(func=cmd_categorize_transactions)
-
-    import_parser = transactions_subparsers.add_parser(
-        "import", help="Import transactions from another CSV"
-    )
-    import_parser.add_argument(
-        "transactions", type=Path, help="Path to transactions CSV file"
-    )
-    import_parser.add_argument(
-        "--import-paths",
-        type=existing_file,
-        required=True,
-        nargs="+",
-        help="Paths to CSV files to import from",
-    )
-    import_parser.add_argument(
-        "--desc-column", help="Column name for transaction descriptions"
-    )
-    import_parser.add_argument(
-        "--date-column", help="Column name for transaction dates"
-    )
-    import_parser.add_argument(
-        "--amount-column", help="Column name for transaction amounts"
-    )
-    import_parser.add_argument("--account-column", help="Column name for account names")
-    import_parser.add_argument(
-        "--category-column", help="Column name for account names"
-    )
-    # TODO should -value be added for the rest?
-    import_parser.add_argument(
-        "--account-value", help="Literal value to use for the Account if not in the CSV"
-    )
-    import_parser.add_argument(
-        "--category-value",
-        help="Literal value to use for the Category if not in the CSV, or leave out to assign later",
-    )
-    import_parser.add_argument(
-            "--flip-sign", action='store_true', help="Flip the sign of the transactions. Useful for credit card statements since those 'expenses' are usually positive instead of negative"
-        )
-    import_parser.set_defaults(func=cmd_import_transactions)
-
-    new_txn_parser = transactions_subparsers.add_parser(
-        "new", help="Add a new transaction"
-    )
-    new_txn_parser.add_argument(
-        "transactions", type=Path, help="Path to transactions CSV file"
-    )
-    new_txn_parser.set_defaults(func=cmd_new_transaction)
-
-    # Categories group
-    categories_parser = subparsers.add_parser("categories", help="Manage categories")
-    categories_subparsers = categories_parser.add_subparsers(
-        dest="action", required=True
-    )
-
-    list_categories_parser = categories_subparsers.add_parser(
-        "list", help="List all categories"
-    )
-    list_categories_parser.add_argument(
-        "categories", type=Path, help="Path to categories CSV file"
-    )
-    list_categories_parser.set_defaults(func=cmd_list_categories)
-
-    new_category_parser = categories_subparsers.add_parser(
-        "new", help="Create a new category"
-    )
-    new_category_parser.add_argument(
-        "categories", type=Path, help="Path to categories CSV file"
-    )
-    new_category_parser.set_defaults(func=cmd_new_category)
-
-    # Reports group
-    reports_parser = subparsers.add_parser("reports", help="Generate spending reports")
-    reports_subparsers = reports_parser.add_subparsers(dest="action", required=True)
-
-    report_generate_parser = reports_subparsers.add_parser(
-        "generate", help="Generate a spending report"
-    )
-    report_generate_parser.add_argument(
-        "transactions", type=Path, help="Path to transactions CSV file"
-    )
-    report_generate_parser.add_argument(
-        "--type",
-        choices=["monthly", "yearly", "category"],
-        default="monthly",
-        help="Type of report",
-    )
-    report_generate_parser.add_argument(
-        "--period", help="Specific period (e.g., '2024-03' for March 2024)"
-    )
-    report_generate_parser.set_defaults(func=cmd_generate_report)
-
-    # Backup group
-    backup_parser = subparsers.add_parser("backup", help="Backup data")
-    backup_subparsers = backup_parser.add_subparsers(dest="action", required=True)
-
-    backup_create_parser = backup_subparsers.add_parser(
-        "create", help="Create a backup"
-    )
-    backup_create_parser.add_argument(
-        "destination", type=Path, help="Backup file or directory"
-    )
-    backup_create_parser.set_defaults(func=cmd_backup)
-
-    args = parser.parse_args()
+    args = parse_args(sys.argv[1:])
     args.func(args)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
