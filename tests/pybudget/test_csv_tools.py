@@ -52,7 +52,7 @@ def test_large_csv(tmp_path):
         assert actual_lines[i] == expected_lines[i]
 
     large_csv.batch_delete(['456'])
-    assert large_csv.read_one('456') == None
+    assert large_csv.read_one('456') is None
 
     large_csv.append({**empty_transaction, 'description': 'append with no id'})
     # next id should be 789 + 1

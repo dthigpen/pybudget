@@ -67,7 +67,6 @@ def list_transactions(
     suggest_categories: bool = False,
 ):
     transactions_csv = csv_tools.TransactionsCSV(data_path)
-    config = load_config(config_path)
 
     # set the final output format variables
     to_file = output_path and output_path != '-'
@@ -94,7 +93,7 @@ def list_transactions(
             continue
         dict_values = t.to_row()
         if suggest_categories:
-            dict_values['suggested_category'] = 'asdf'
+            dict_values['suggested_category'] = ''
         row_dicts.append(dict_values)
 
     if output_format == OutputFormat.TABLE:
@@ -135,9 +134,9 @@ def edit_transactions(
 ):
     updates = {}
     if args.from_path == '-':
-        txns = csv.reader(sys.stdin)
+        csv.reader(sys.stdin)
     else:
-        txns = read_transactions_from_csv(from_path)
+        read_transactions_from_csv(from_path)
 
     for row in rows:
         if len(row) >= 2:
@@ -159,7 +158,7 @@ def handle_delete_transaction(args):
 
 def handle_categorize_transactions(args):
     db_conn = database.init_db(args.data)
-    config = load_config(args.config)
+    load_config(args.config)
     database.categorize_uncategorized_transactions(db_conn)
 
 
@@ -205,7 +204,6 @@ def import_transactions(
     config = load_config(config_path)
     importers = config.get('importers')
     # TODO arg to pass importer name directly
-    new_transactions = []
     named_importer = None
     if importer_name:
         named_importer = next(
@@ -385,6 +383,7 @@ def parse_args(system_args):
             default=Path.cwd() / CONFIG_FILE_NAME,
             help='Path to the config file',
         )
+
     parser = argparse.ArgumentParser(description='pybudget CLI')
     parser.set_defaults(func=lambda args: parser.print_help())
     add_common_arguments(parser)

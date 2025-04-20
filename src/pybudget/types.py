@@ -23,9 +23,9 @@ class Transaction:
             value = row.get(field_name)
             if field_type == datetime:
                 kwargs[field_name] = str_to_datetime(value) if value else None
-            elif field_type == float:
+            elif field_type is float:
                 kwargs[field_name] = float(value) if value else 0.0
-            elif field_type == Optional[str] or field_type == str:
+            elif field_type == Optional[str] or field_type is str:
                 kwargs[field_name] = (
                     value.strip() if value is not None and value.strip() else None
                 )

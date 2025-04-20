@@ -86,19 +86,18 @@ class LargeCSV:
 
     def append(self, *row_datas):
         with open(self.path, 'a', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=self.fieldnames or row_data.keys())
-            if not self.fieldnames:
-                self.fieldnames = list(row_data.keys())
-                writer.writeheader()
+            writer = None
             for row_data in row_datas:
+                if not writer:
+                    writer = csv.DictWriter(
+                        f, fieldnames=self.fieldnames or row_data.keys()
+                    )
+                    if not self.fieldnames:
+                        self.fieldnames = list(row_data.keys())
+                        writer.writeheader()
                 self._check_and_add_id(row_data)
                 offset = f.tell()
                 writer.writerow(row_data)
-                # offset = (
-                #     f.tell()
-                #     - len(",".join(str(row_data.get(k, "")) for k in self.fieldnames))
-                #     -
-                # )
                 self.index[row_data[self.id_column]] = offset
         self._save_index()
 
