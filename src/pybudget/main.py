@@ -8,7 +8,6 @@ from pathlib import Path
 from . import database
 from . import csv_tools
 import difflib
-from pathlib import Path
 from .utils import match_filters
 
 from rich import box
@@ -373,21 +372,22 @@ def handle_categorize(args):
 
 
 def parse_args(system_args):
+    def add_common_arguments(parser):
+        parser.add_argument(
+            '--data',
+            type=Path,
+            default=Path.cwd() / DATA_FILE_NAME,
+            help='Path to the transactions CSV',
+        )
+        parser.add_argument(
+            '--config',
+            type=Path,
+            default=Path.cwd() / CONFIG_FILE_NAME,
+            help='Path to the config file',
+        )
     parser = argparse.ArgumentParser(description='pybudget CLI')
     parser.set_defaults(func=lambda args: parser.print_help())
-    parser.add_argument(
-        '--data',
-        type=Path,
-        default=Path.cwd() / DATA_FILE_NAME,
-        help='Path to the transactions CSV',
-    )
-    parser.add_argument(
-        '--config',
-        type=Path,
-        default=Path.cwd() / CONFIG_FILE_NAME,
-        help='Path to the config file',
-    )
-
+    add_common_arguments(parser)
     subparsers = parser.add_subparsers(dest='command')
 
     # Import group
@@ -395,8 +395,9 @@ def parse_args(system_args):
     import_sub = import_parser.add_subparsers(dest='import_target', required=True)
 
     import_transactions = import_sub.add_parser(
-        'transactions', help='Import transactions'
+        'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='Import transactions'
     )
+    add_common_arguments(import_transactions)
     import_transactions.add_argument(
         'csv_paths', nargs='+', type=Path, help='Path(s) to CSV files to import'
     )
@@ -412,6 +413,7 @@ def parse_args(system_args):
     list_transactions = list_sub.add_parser(
         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
     )
+    add_common_arguments(list_transactions)
     # TODO Implement filters
     # list_transactions.add_argument(
     #     "--filter", nargs="+", type=Path, dest='filters', help="Filter using expressions like --filter field<op>value"
