@@ -8,7 +8,7 @@ from pathlib import Path
 from . import database
 from . import csv_tools
 import difflib
-from .utils import match_filters
+from .utils import str_to_datetime
 
 from rich import box
 from rich.console import Console
@@ -49,7 +49,7 @@ def handle_list_transactions(args):
     list_transactions(
         args.data,
         args.config,
-        None,
+        args.filter,
         only_uncategorized=args.uncategorized,
         output_format=args.output_format,
         output_path=args.output_file,
@@ -57,17 +57,92 @@ def handle_list_transactions(args):
     )
 
 
+def parse_filter_arg(filter_str):
+    import re
+
+    match = re.match(r'(\w+)([!=<>~]{1,2})(.*)', filter_str)
+    if not match:
+        raise ValueError(f'Invalid filter: {filter_str}')
+    return match.group(1), match.group(2), match.group(3).strip()
+
+
+def match_filters(txn, filters, field_types=None, strict=False):
+    for field, op, value in filters:
+        row_val = getattr(txn, field)
+
+        # Determine type
+        if field_types and field in field_types:
+            field_type = field_types[field]
+        else:
+            # Default: string
+            field_type = 'string'
+        if row_val is None:
+            if field_type == 'string':
+                # coerce None to '' if doing a string search
+                row_val = ''
+            else:
+                return False
+
+        try:
+            if field_type == 'float':
+                row_val = float(row_val)
+                value = float(value)
+            elif field_type == 'date':
+                value = str_to_datetime(value)
+            elif field_type == 'int':
+                row_val = int(row_val)
+                value = int(value)
+            else:
+                row_val = str(row_val).lower()
+                value = str(value).lower()
+        except (ValueError, TypeError) as e:
+            if strict:
+                raise ValueError(
+                    f"Error parsing field '{field}' with value '{row_val}' and filter value '{value}': {e}"
+                )
+            return False
+
+        operators = {'=', '!=', '>', '<', '>=', '<=', '~', '!~'}
+        if strict and op not in operators:
+            raise ValueError(f'Unknown filter operator: {op}')
+
+        if op == '=' and row_val != value:
+            return False
+        elif op == '!=' and row_val == value:
+            return False
+        elif op == '>' and row_val <= value:
+            return False
+        elif op == '<' and row_val >= value:
+            return False
+        elif op == '>=' and row_val < value:
+            return False
+        elif op == '<=' and row_val > value:
+            return False
+        elif op == '~' and value not in row_val:
+            return False
+        elif op == '!~' and value in row_val:
+            return False
+
+    return True
+
+
 def list_transactions(
     data_path: Path,
     config_path: Path,
-    filters: list[str],
+    filters: list[str] = None,
     only_uncategorized=False,
     output_format: OutputFormat = None,
     output_path: Path = None,
     suggest_categories: bool = False,
 ):
-    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    filters = [parse_filter_arg(f) for f in filters] if filters else []
 
+    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    if not output_format:
+        if output_path:
+            output_format = OutputFormat.CSV
+        else:
+            output_format = OutputFormat.Table
     # set the final output format variables
     to_file = output_path and output_path != '-'
     if to_file:
@@ -85,17 +160,29 @@ def list_transactions(
     if suggest_categories:
         columns.append('suggested_category')
 
-    # TODO order by date by default
+    field_types = {
+        'id': 'string',
+        'date': 'date',
+        'description': 'string',
+        'amount': 'float',
+        'category': 'string',
+        'account': 'string',
+    }
     # TODO do not keep all results in memory, use generator
     row_dicts = []
     for t in transactions_csv.read_many():
-        if only_uncategorized and t.category:
+        if (only_uncategorized and t.category) or (
+            filters
+            and not match_filters(t, filters, field_types=field_types, strict=True)
+        ):
             continue
         dict_values = t.to_row()
         if suggest_categories:
             dict_values['suggested_category'] = ''
         row_dicts.append(dict_values)
 
+    # sort by date before output
+    row_dicts.sort(key=lambda t: t['date'])
     if output_format == OutputFormat.TABLE:
         output_rows_to_table(row_dicts, columns)
     elif output_format == OutputFormat.CSV:
@@ -198,12 +285,15 @@ def handle_import_transactions(args):
 
 
 def import_transactions(
-    data_path: Path, config_path: Path, csv_paths: list[Path], importer_name: str = None
+    data_path: Path,
+    config_path: Path,
+    csv_paths: list[Path],
+    importer_name: str = None,
+    dry_run=False,
 ):
     transactions_csv = csv_tools.TransactionsCSV(data_path)
     config = load_config(config_path)
     importers = config.get('importers')
-    # TODO arg to pass importer name directly
     named_importer = None
     if importer_name:
         named_importer = next(
@@ -211,6 +301,7 @@ def import_transactions(
         )
         if not named_importer:
             raise ValueError(f'Failed to find importer by name "{importer_name}"')
+    new_transactions = []
     for p in csv_paths:
         # find matching importer or use named one
         matching_importer = (
@@ -247,8 +338,20 @@ def import_transactions(
                 transaction.amount = -1 * transaction.amount
 
             transactions_in_file.append(transaction)
-        transactions_csv.add(*transactions_in_file)
-        print(f'Successfully imported {p}')
+        if not dry_run:
+            new_transactions.extend(transactions_csv.add(*transactions_in_file))
+        else:
+            new_transactions.extend(transactions_in_file)
+
+        print(f'Finished importing {p}')
+
+    columns = ['id', *TRANSACTION_FIELDS]
+    new_txn_dicts = [t.to_row() for t in new_transactions]
+    output_rows_to_table(new_txn_dicts, columns)
+    if not dry_run:
+        print(f'Imported {len(new_transactions)} new transactions')
+    else:
+        print(f'Would have imported {len(new_transactions)} new transactions')
 
 
 def handle_new_transaction(args):
@@ -393,42 +496,47 @@ def parse_args(system_args):
     import_parser = subparsers.add_parser('import', help='Import data')
     import_sub = import_parser.add_subparsers(dest='import_target', required=True)
 
-    import_transactions = import_sub.add_parser(
+    import_transactions_parser = import_sub.add_parser(
         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='Import transactions'
     )
-    add_common_arguments(import_transactions)
-    import_transactions.add_argument(
+    add_common_arguments(import_transactions_parser)
+    import_transactions_parser.add_argument(
         'csv_paths', nargs='+', type=Path, help='Path(s) to CSV files to import'
     )
-    import_transactions.add_argument(
+    import_transactions_parser.add_argument(
         '--importer', help='Name of the importer defined in config.json'
     )
-    import_transactions.set_defaults(func=handle_import_transactions)
+    import_transactions_parser.add_argument(
+        '--dry-run',
+        help='Run through the operation without actually persisting any changes',
+    )
+    import_transactions_parser.set_defaults(func=handle_import_transactions)
 
     # List command
     list_parser = subparsers.add_parser('list', help='list data')
     list_sub = list_parser.add_subparsers(dest='list_target', required=True)
 
-    list_transactions = list_sub.add_parser(
+    list_transactions_parser = list_sub.add_parser(
         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
     )
-    add_common_arguments(list_transactions)
-    # TODO Implement filters
-    # list_transactions.add_argument(
-    #     "--filter", nargs="+", type=Path, dest='filters', help="Filter using expressions like --filter field<op>value"
-    # )
-    list_transactions.add_argument(
+    add_common_arguments(list_transactions_parser)
+    list_transactions_parser.add_argument(
+        '--filter',
+        action='append',
+        help='Adda filter expression like "field~value", "amount>100", etc. Can be used multiple times.',
+    )
+    list_transactions_parser.add_argument(
         '--uncategorized',
         action='store_true',
         help='A filter to only show uncategorized transactions',
     )
-    list_transactions.add_argument(
+    list_transactions_parser.add_argument(
         '-s',
         '--suggest-categories',
         action='store_true',
         help='Add a column for suggested categories for the uncategorized',
     )
-    list_transactions.add_argument(
+    list_transactions_parser.add_argument(
         '-f',
         '--output-format',
         choices=list(OutputFormat),
@@ -436,14 +544,14 @@ def parse_args(system_args):
         default=OutputFormat.DEFAULT,
         help='The format of the output. If an output file is specified, this option is ignored and CSV format is used.',
     )
-    list_transactions.add_argument(
+    list_transactions_parser.add_argument(
         '-o',
         '--output-file',
         type=Path,
         help='The file to output to instead of stdout. File will be in CSV format.',
     )
 
-    list_transactions.set_defaults(func=handle_list_transactions)
+    list_transactions_parser.set_defaults(func=handle_list_transactions)
 
     # Edit command
     edit_parser = subparsers.add_parser('edit', help='Edit a transaction')

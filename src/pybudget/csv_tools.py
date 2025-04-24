@@ -85,6 +85,7 @@ class LargeCSV:
         return row_data
 
     def append(self, *row_datas):
+        results = []
         with open(self.path, 'a', newline='') as f:
             writer = None
             for row_data in row_datas:
@@ -99,7 +100,9 @@ class LargeCSV:
                 offset = f.tell()
                 writer.writerow(row_data)
                 self.index[row_data[self.id_column]] = offset
+                results.append(row_data)
         self._save_index()
+        return results
 
     def batch_replace(self, updates_dict: dict):
         empty_values = {k: '' for k in self.fieldnames if k != self.id_column}
@@ -213,7 +216,10 @@ class TransactionsCSV:
         self.large_csv = LargeCSV(self.path, fieldnames=ordered_column_names)
 
     def add(self, *txns: Transaction):
-        self.large_csv.append(*[t.to_row() for t in txns])
+        return [
+            Transaction.from_csv(d)
+            for d in self.large_csv.append(*[t.to_row() for t in txns])
+        ]
 
     def update(self, *txns: Transaction):
         updates = {t.id: t.to_row() for t in txns}

@@ -78,3 +78,18 @@ def unimported_csv(tmp_path, dummy_transactions):
             }
             writer.writerow(data)
     yield csv_path
+
+
+@pytest.fixture
+def imported_csv_transaction_data():
+    # intentionally out of order
+    return """id,date,description,amount,account,category
+1,2025-01-01,Description 1,-101.0,My Institution,
+2,2025-01-02,Description 2,-102.0,My Institution,
+3,2025-01-03,Description 3,-103.0,My Institution,
+6,2025-01-06,Description 6,-106.0,My Institution,Category2
+7,2025-01-07,Description 7,-107.0,My Institution,
+8,2025-01-08,Description 8,-108.0,My Institution,
+4,2025-01-04,Description 4,-104.0,My Institution,Category1
+5,2025-01-05,Description 5,-105.0,My Institution,
+"""

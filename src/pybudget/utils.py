@@ -28,36 +28,3 @@ def extract_filters(args):
         filters['fields'] = field_filters
 
     return filters
-
-
-def match_filters(row, filters):
-    """Check if a CSV row matches the provided filter criteria."""
-    # Date filters
-    if 'start_date' in filters:
-        row_date = parse_date(row.get('date'))
-        if not row_date or row_date < filters['start_date']:
-            return False
-    if 'end_date' in filters:
-        row_date = parse_date(row.get('date'))
-        if not row_date or row_date > filters['end_date']:
-            return False
-
-    # Field-based filters
-    for key, val in filters.get('fields', {}).items():
-        row_val = row.get(key, '')
-        if key == 'description':
-            if val.lower() not in row_val.lower():
-                return False
-        else:
-            if row_val != val:
-                return False
-
-    return True
-
-
-def parse_date(date_str):
-    """Try to parse a date string into a datetime object."""
-    try:
-        return datetime.strptime(date_str, '%Y-%m-%d')
-    except (ValueError, TypeError):
-        return None
