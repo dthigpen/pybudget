@@ -5,10 +5,10 @@ import json
 from enum import Enum
 from typing import Literal
 from pathlib import Path
-from . import database
-from . import csv_tools
+from pybudget import database, csv_tools
+from pybudget.utils import str_to_datetime
+from pybudget.types import Transaction
 import difflib
-from .utils import str_to_datetime
 
 from rich import box
 from rich.console import Console
@@ -17,6 +17,7 @@ from rich.table import Table
 DATA_FILE_NAME = 'pyb_transactions.csv'
 CONFIG_FILE_NAME = 'pyb_config.json'
 TRANSACTION_FIELDS = ['date', 'description', 'amount', 'account', 'category']
+DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
 
 
 class OutputFormat(Enum):
@@ -30,8 +31,9 @@ class OutputLocation(Enum):
     FILE = 'file'
 
 
-def __create_transactions_table() -> Table:
-    table = Table(show_header=True, box=box.MARKDOWN, title='Transactions')
+def __create_transactions_table(title: str = None) -> Table:
+    title = title or 'Transactions'
+    table = Table(show_header=True, box=box.MARKDOWN, title=title)
     table.add_column('ID', no_wrap=True)
     table.add_column('Date', no_wrap=True, width=12)
     table.add_column('Description', no_wrap=True)
@@ -176,7 +178,7 @@ def list_transactions(
             and not match_filters(t, filters, field_types=field_types, strict=True)
         ):
             continue
-        dict_values = t.to_row()
+        dict_values = t.to_str_dict()
         if suggest_categories:
             dict_values['suggested_category'] = ''
         row_dicts.append(dict_values)
@@ -191,9 +193,9 @@ def list_transactions(
         raise ValueError(f'Unrecognized output format: {output_format.value}')
 
 
-def output_rows_to_table(row_dicts: list[dict], columns: list[str]):
+def output_rows_to_table(row_dicts: list[dict], columns: list[str], title: str = None):
     console = Console()
-    table = __create_transactions_table()
+    table = __create_transactions_table(title=title)
     if 'suggested_category' in columns:
         table.add_column('Suggested', no_wrap=True)
     for row_dict in row_dicts:
@@ -217,36 +219,79 @@ def output_rows_as_csv(row_dicts: list[dict], columns: list[str], output_path: P
 
 
 def edit_transactions(
-    data_path: Path, config_path: Path, from_path: Path | Literal['-']
+    data_path: Path,
+    config_path: Path,
+    from_path: Path | Literal['-'],
+    transaction_id: str = None,
+    new_date: str = None,
+    new_description: str = None,
+    new_amount: float = None,
+    new_account: str = None,
+    new_category: str = None,
+    dry_run=False,
 ):
-    updates = {}
-    if args.from_path == '-':
-        csv.reader(sys.stdin)
+    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    column_names = {c: c for c in DATA_FILE_COLUMNS}
+    updated = []
+    txn_update_dicts = []
+
+    if from_path:
+        txn_update_dicts = csv_tools.read_dicts_from_csv(
+            from_path, column_names_mapping=column_names
+        )
+    elif transaction_id is not None:
+        updates_dict = {
+            'id': transaction_id,
+            'date': new_date,
+            'description': new_description,
+            'amount': new_amount,
+            'account': new_account,
+            'category': new_category,
+        }
+        updates_dict = {k: v for k, v in updates_dict.items() if v is not None}
+        txn_update_dicts = [updates_dict]
     else:
-        read_transactions_from_csv(from_path)
+        raise ValueError('No transactions specified to edit')
+    for txn_updates_dict in txn_update_dicts:
+        txn_id_to_update = txn_updates_dict.get('id', None)
+        if txn_id_to_update is None:
+            raise ValueError(
+                f'Column named "id" must be present for updated to take place'
+            )
 
-    for row in rows:
-        if len(row) >= 2:
-            row_id, category = row[0], row[1]
-            updates[row_id] = {'category': category}
+        orig_transaction = transactions_csv.read_one(txn_id_to_update)
+        updated_transaction = Transaction.from_str_dict(
+            orig_transaction.to_str_dict() | txn_updates_dict
+        )
+        if not dry_run:
+            transactions_csv.update(updated_transaction)
+        updated.append(updated_transaction)
 
-    updated_ids = lcsv.batch_update(updates)
-    print(f'Updated {len(updated_ids)} transactions.')
+    txn_dicts = [t.to_str_dict() for t in updated]
+    output_rows_to_table(txn_dicts, DATA_FILE_COLUMNS, title='Updated Transactions')
 
 
 def handle_edit_transaction(args):
-    print(f'Editing transaction in {args.transactions}: {args.transaction_id}')
-    edit_transactions(args.data, args.config, args.from_path)
+    # print(f'Editing transaction in {args.transactions}: {args.transaction_id}')
+    if args.transaction_id is None and args.from_path is None:
+        raise ValueError(
+            'A transaction_id or --from argument must be applied. See --help for details.'
+        )
+    edit_transactions(
+        args.data,
+        args.config,
+        args.from_path,
+        args.transaction_id,
+        new_date=args.date,
+        new_amount=args.amount,
+        new_account=args.account,
+        new_category=args.category,
+        dry_run=args.dry_run,
+    )
 
 
 def handle_delete_transaction(args):
     print(f'Deleting transaction in {args.transactions}: {args.transaction_id}')
-
-
-def handle_categorize_transactions(args):
-    db_conn = database.init_db(args.data)
-    load_config(args.config)
-    database.categorize_uncategorized_transactions(db_conn)
 
 
 def find_importer(p: Path, importers: list):
@@ -284,6 +329,18 @@ def handle_import_transactions(args):
     )
 
 
+def validate_transaction(txn: Transaction):
+    if (
+        txn.date is None
+        or not txn.description
+        or txn.amount is None
+        or txn.account is None
+    ):
+        raise ValueError(
+            'Transaction must have a valid date, description, amount, and account value. Invalid transaction: {txn}'
+        )
+
+
 def import_transactions(
     data_path: Path,
     config_path: Path,
@@ -301,7 +358,7 @@ def import_transactions(
         )
         if not named_importer:
             raise ValueError(f'Failed to find importer by name "{importer_name}"')
-    new_transactions = []
+    added_transactions = []
     for p in csv_paths:
         # find matching importer or use named one
         matching_importer = (
@@ -331,59 +388,41 @@ def import_transactions(
             'category': matching_importer.get('categoryValue'),
         }
         transactions_in_file = []
-        for transaction in csv_tools.read_transactions_from_csv(
-            p, column_names=column_names, default_values=default_values
+        for txn_dict in csv_tools.read_dicts_from_csv(
+            p, column_names_mapping=column_names, default_values=default_values
         ):
+            transaction = Transaction.from_str_dict(txn_dict)
+            validate_transaction(transaction)
+            # flip sign for something like a credit card
+            # where transactions "add" to the credit
             if matching_importer.get('flipSign'):
                 transaction.amount = -1 * transaction.amount
 
             transactions_in_file.append(transaction)
         if not dry_run:
-            new_transactions.extend(transactions_csv.add(*transactions_in_file))
+            added_transactions.extend(transactions_csv.add(*transactions_in_file))
         else:
-            new_transactions.extend(transactions_in_file)
+            added_transactions.extend(transactions_in_file)
 
         print(f'Finished importing {p}')
 
     columns = ['id', *TRANSACTION_FIELDS]
-    new_txn_dicts = [t.to_row() for t in new_transactions]
+    new_txn_dicts = [t.to_str_dict() for t in added_transactions]
     output_rows_to_table(new_txn_dicts, columns)
     if not dry_run:
-        print(f'Imported {len(new_transactions)} new transactions')
+        print(f'Imported {len(added_transactions)} new transactions')
     else:
-        print(f'Would have imported {len(new_transactions)} new transactions')
+        print(f'Would have imported {len(added_transactions)} new transactions')
 
 
 def handle_new_transaction(args):
     print(f'Adding a new transaction to {args.transactions}')
 
 
-def handle_list_categories(args):
-    # print(f"Listing categories from {args.categories}")
-    config = load_config(args.config)
-    if not config.get('categories'):
-        print(
-            'There are no categories in your config file. You can add them manually or with "pybudget categories new"'
-        )
-    for c in config.get('categories'):
-        print(f'Category: {c["name"]}')
-        print(f'Type: {c["type"]}')
-        print(f'Goal: {c["goal"]}')
-        print()
-
-
-def handle_new_category(args):
-    print(f'Creating a new category in {args.categories}')
-
-
 def handle_generate_report(args):
     print(
         f'Generating {args.type} report for {args.period} using transactions from {args.transactions}'
     )
-
-
-def handle_backup(args):
-    print(f'Creating a backup at {args.destination}')
 
 
 def existing_file(p):
@@ -405,71 +444,6 @@ def load_config(p):
     }
     actual = existing_json_file(p)
     return {**default_config, **actual}
-
-
-def handle_categorize(args):
-    csv_path = args.data
-    lcsv = database.LargeCSV(csv_path)
-    filters = extract_filters(args)
-
-    # First pass: collect categorized transactions
-    categorized = []
-    with open(csv_path, newline='') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            if row.get('category'):
-                categorized.append(row)
-
-    # Second pass: filter uncategorized and suggest
-    if args.suggest:
-        with (
-            open(args.suggest, 'w', newline='') as out_f,
-            open(csv_path, newline='') as in_f,
-        ):
-            reader = csv.DictReader(in_f)
-            writer = csv.writer(out_f)
-            writer.writerow(['id', 'description', 'suggested_category'])  # header
-            for row in reader:
-                if row.get('category'):
-                    continue
-                if not match_filters(row, filters):
-                    continue
-                desc = row['description']
-                match = difflib.get_close_matches(
-                    desc, [t['description'] for t in categorized], n=1
-                )
-                suggested = (
-                    next(
-                        (
-                            t['category']
-                            for t in categorized
-                            if t['description'] == match[0]
-                        ),
-                        '',
-                    )
-                    if match
-                    else ''
-                )
-                writer.writerow([row['id'], desc, suggested])
-
-    # Apply phase
-    elif args.apply:
-        updates = {}
-
-        if args.apply == '-':
-            rows = csv.reader(sys.stdin)
-        else:
-            with open(args.apply, newline='') as f:
-                rows = csv.reader(f)
-                next(rows, None)  # skip header if present
-
-        for row in rows:
-            if len(row) >= 2:
-                row_id, category = row[0], row[1]
-                updates[row_id] = {'category': category}
-
-        updated_ids = lcsv.batch_update(updates)
-        print(f'Updated {len(updated_ids)} transactions.')
 
 
 def parse_args(system_args):
@@ -554,66 +528,48 @@ def parse_args(system_args):
     list_transactions_parser.set_defaults(func=handle_list_transactions)
 
     # Edit command
+    #     list_parser = subparsers.add_parser('list', help='list data')
+    #     list_sub = list_parser.add_subparsers(dest='list_target', required=True)
+    #
+    #     list_transactions_parser = list_sub.add_parser(
+    #         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
+    #     )
     edit_parser = subparsers.add_parser('edit', help='Edit a transaction')
-    edit_parser.add_argument('transaction_id', help='ID of the transaction to edit')
-    edit_parser.add_argument('--amount', type=float)
-    edit_parser.add_argument('--description')
-    edit_parser.add_argument('--date')
-    edit_parser.add_argument('--account')
-    edit_parser.add_argument('--category')
-    edit_parser.add_argument(
+    edit_sub = edit_parser.add_subparsers(dest='edit_target', required=True)
+    edit_txns_parser = edit_sub.add_parser(
+        'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
+    )
+    add_common_arguments(edit_txns_parser)
+    edit_source = edit_txns_parser.add_mutually_exclusive_group(required=True)
+    edit_source.add_argument(
+        '--id', dest='transaction_id', help='ID of the transaction to edit'
+    )
+    edit_source.add_argument(
         '--from', dest='from_path', help='Apply edits from either a file or from stdin'
     )
-    edit_parser.set_defaults(func=handle_edit_transaction)
-
-    # Categorize command
-    categorize_parser = subparsers.add_parser(
-        'categorize', help='Suggest or apply categories to uncategorized transactions'
+    edit_txns_parser.add_argument(
+        '--amount', type=float, help='A new amount to apply to the transaction'
     )
-
-    # Suggest/Apply
-    group = categorize_parser.add_mutually_exclusive_group(required=True)
-    group.add_argument(
-        '--suggest',
+    edit_txns_parser.add_argument(
+        '--description', help='A new description to apply to the transaction.'
+    )
+    edit_txns_parser.add_argument(
+        '--date',
+        help='A new date to apply to the transaction. In the format YYYY-MM-DD',
+    )
+    edit_txns_parser.add_argument(
+        '--account', help='A new account to apply to the transaction.'
+    )
+    edit_txns_parser.add_argument(
+        '--category',
+        help='A new category to apply to the transaction, or use "" for uncategorized.',
+    )
+    edit_txns_parser.add_argument(
+        '--dry-run',
         action='store_true',
-        help='Output uncategorized transactions with suggested categories to a file',
+        help='Run through the operation without actually persisting any changes.',
     )
-    group.add_argument(
-        '--apply', action='store_true', help='Apply categories from a file or stdin'
-    )
-
-    categorize_parser.add_argument(
-        '--output', type=Path, help='Output file for --suggest'
-    )
-    categorize_parser.add_argument('--input', type=Path, help='Input file for --apply')
-    categorize_parser.add_argument(
-        '--data',
-        type=Path,
-        default=Path.cwd() / 'pyb_transactions.csv',
-        help='Path to the transactions CSV',
-    )
-    categorize_parser.add_argument(
-        '--config',
-        type=Path,
-        default=Path.cwd() / 'config.json',
-        help='Path to config file',
-    )
-
-    # Date filters
-    categorize_parser.add_argument(
-        '--start-date', type=str, help='Filter by start date (YYYY-MM-DD)'
-    )
-    categorize_parser.add_argument(
-        '--end-date', type=str, help='Filter by end date (YYYY-MM-DD)'
-    )
-
-    # Field filters
-    categorize_parser.add_argument(
-        '--description', type=str, help='Filter by substring in description'
-    )
-    categorize_parser.add_argument('--account', type=str, help='Filter by account name')
-    categorize_parser.add_argument('--category', type=str, help='Filter by category')
-    categorize_parser.set_defaults(func=handle_categorize)
+    edit_txns_parser.set_defaults(func=handle_edit_transaction)
 
     return parser.parse_args(system_args)
 

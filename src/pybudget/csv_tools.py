@@ -7,11 +7,17 @@ import tempfile
 import json
 from typing import Literal
 import sys
+import io
 
 
 class LargeCSV:
     def __init__(
-        self, path: Path, id_column='id', index_path: Path = None, fieldnames=None
+        self,
+        path: Path,
+        id_column='id',
+        index_path: Path = None,
+        fieldnames=None,
+        reset_index=False,
     ):
         self.path = Path(path)
         self.id_column = id_column
@@ -21,9 +27,11 @@ class LargeCSV:
         )
         self.index = {}
         self.fieldnames = fieldnames if fieldnames is not None else []
-        self._load_or_build_index()
+        self._load_or_build_index(reset_index)
 
-    def _load_or_build_index(self):
+    def _load_or_build_index(self, reset_index: bool):
+        if (reset_index or not self.path.exists()) and self.index_path.exists():
+            self.index_path.unlink()
         try:
             with open(self.index_path, 'r') as f:
                 data = json.load(f)
@@ -72,7 +80,11 @@ class LargeCSV:
                 with open(self.path, newline='') as f:
                     f.seek(offset)
                     line = f.readline()
-                    yield dict(zip(self.fieldnames, line.strip().split(',')))
+                    yield next(
+                        csv.DictReader(
+                            io.StringIO(line), fieldnames=self.fieldnames, delimiter=','
+                        )
+                    )
         else:
             with open(self.path, newline='') as f:
                 reader = csv.DictReader(f)
@@ -217,16 +229,16 @@ class TransactionsCSV:
 
     def add(self, *txns: Transaction):
         return [
-            Transaction.from_csv(d)
-            for d in self.large_csv.append(*[t.to_row() for t in txns])
+            Transaction.from_str_dict(d)
+            for d in self.large_csv.append(*[t.to_str_dict() for t in txns])
         ]
 
     def update(self, *txns: Transaction):
-        updates = {t.id: t.to_row() for t in txns}
+        updates = {t.id: t.to_str_dict() for t in txns}
         self.large_csv.batch_update(updates)
 
     def replace(self, *txns: Transaction):
-        replacements = {t.id: t.to_row() for t in txns}
+        replacements = {t.id: t.to_str_dict() for t in txns}
         self.large_csv.batch_replace(replacements)
 
     def delete(self, *ids: int):
@@ -234,23 +246,83 @@ class TransactionsCSV:
 
     def read_many(self, *ids: int):
         for t in self.large_csv.read_many(*ids):
-            yield Transaction.from_csv(t)
+            yield Transaction.from_str_dict(t)
 
     def read_one(self, row_id: int):
         t = self.large_csv.read_one(str(row_id))
-        return Transaction.from_csv(t) if t else None
+        return Transaction.from_str_dict(t) if t else None
 
 
 def init_large_csv(path: Path, fieldnames: list[str]):
-    if not path.exists():
+    is_new = not path.exists()
+    if is_new:
         with open(path, 'w') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-    LargeCSV(path)
+
+    LargeCSV(path, reset_index=is_new)
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def open_csv_file_or_stdin(csv_path: Path):
+    if csv_path == '-':
+        csvfile = sys.stdin
+    else:
+        csvfile = open(csv_path, newline='')
+    try:
+        yield csv.DictReader(csvfile)
+    finally:
+        if csv_path != '-' and csvfile:
+            csvfile.close()
+
+
+def keep(d, keys):
+    return {k: v for k, v in d.items() if k in keys}
+
+
+def rename_keys(d, renames):
+    return {renames.get(k, k): v for k, v in d.items()}
+
+
+def process_dict(
+    r: dict,
+    column_names_mapping: dict = None,
+    default_values: dict = None,
+):
+    column_names_mapping = column_names_mapping or {}
+    default_values = default_values or {}
+    # swap keys and values so that the specific name is a key and generic is a value
+    renames_mapping = {v: k for k, v in column_names_mapping.items()}
+    all_keys = list(column_names_mapping.keys())
+
+    # rename specific keys to generic ones
+    r = rename_keys(r, renames_mapping)
+    # only keep relevant keys
+    r = keep(r, all_keys)
+    # apply defaults
+    r = default_values | r
+    # filter out '' and None values
+    r = {k: v for k, v in r.items() if v not in ('', None)}
+    return r
+
+
+def read_dicts_from_csv(
+    csv_path: Path,
+    column_names_mapping: dict = None,
+    default_values: dict = None,
+):
+    with open_csv_file_or_stdin(csv_path) as reader:
+        for r in reader:
+            yield process_dict(r, column_names_mapping, default_values)
 
 
 def read_transactions_from_csv(
-    csv_path: Path, column_names: dict = None, default_values: dict = None
+    csv_path: Path,
+    column_names: dict = None,
+    default_values: dict = None,
 ) -> list[Transaction]:
     column_names = column_names or {}
     default_values = default_values or {}
@@ -284,13 +356,12 @@ def read_transactions_from_csv(
                     and default_values.get(field) is not None
                 ):
                     actual_field_values[field] = default_values[field]
-
             missing_fields = required_fields - set(actual_field_values.keys())
             if missing_fields:
                 raise ValueError(
                     f'Expected to receive column names or defaults for {csv_path}. Missing field {missing_fields}'
                 )
-            yield Transaction.from_csv(actual_field_values)
+            yield Transaction.from_str_dict(actual_field_values)
     finally:
         if csv_path != '-' and csvfile:
             csvfile.close()

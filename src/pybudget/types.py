@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, asdict
 from typing import Optional
 from datetime import datetime
 
@@ -7,15 +7,15 @@ from .utils import str_to_datetime, datetime_to_str
 
 @dataclass
 class Transaction:
-    date: datetime
-    description: str
-    amount: float
+    date: datetime = None
+    description: str = None
+    amount: float = None
     id: Optional[str] = None
     account: Optional[str] = None
     category: Optional[str] = None
 
     @classmethod
-    def from_csv(cls, row: dict) -> 'Transaction':
+    def from_str_dict(cls, row: dict) -> 'Transaction':
         kwargs = {}
         for f in fields(cls):
             field_name = f.name
@@ -34,15 +34,22 @@ class Transaction:
                 raise ValueError(f'Unsupported field type: {field_type}')
         return cls(**kwargs)
 
-    def to_row(self) -> dict:
+    def to_str_dict(self) -> dict:
         row = {}
+        # TODO determine if this should output None as '' or not include at all
         for f in fields(self):
             field_name = f.name
             val = getattr(self, f.name)
             if isinstance(val, datetime):
                 row[field_name] = datetime_to_str(val)
+            elif field_name == 'amount':
+                # format to two decimal places for money
+                row[field_name] = f'{val:.2f}'
             elif val is None:
                 row[field_name] = ''
             else:
                 row[field_name] = str(val)
         return row
+
+    def to_dict(self) -> dict:
+        return asdict(self)
