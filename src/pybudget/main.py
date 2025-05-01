@@ -2,10 +2,11 @@ import argparse
 import csv
 import sys
 import json
+import re
 from enum import Enum
 from typing import Literal
 from pathlib import Path
-from pybudget import database, csv_tools
+from pybudget import csv_tools
 from pybudget.utils import str_to_datetime
 from pybudget.types import Transaction
 import difflib
@@ -14,8 +15,8 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-DATA_FILE_NAME = 'pyb_transactions.csv'
-CONFIG_FILE_NAME = 'pyb_config.json'
+DATA_FILE_NAME = 'pybudget_transactions.csv'
+CONFIG_FILE_NAME = 'pybudget.json'
 TRANSACTION_FIELDS = ['date', 'description', 'amount', 'account', 'category']
 DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
 
@@ -44,7 +45,7 @@ def __create_transactions_table(title: str = None) -> Table:
 
 
 def __dict_to_ordered_values(d: dict, keys: list):
-    return list(map(lambda k: d[k], keys))
+    return list(map(lambda k: d.get(k, ''), keys))
 
 
 def handle_list_transactions(args):
@@ -60,8 +61,6 @@ def handle_list_transactions(args):
 
 
 def parse_filter_arg(filter_str):
-    import re
-
     match = re.match(r'(\w+)([!=<>~]{1,2})(.*)', filter_str)
     if not match:
         raise ValueError(f'Invalid filter: {filter_str}')
@@ -128,6 +127,9 @@ def match_filters(txn, filters, field_types=None, strict=False):
     return True
 
 
+from pybudget import suggestions
+
+
 def list_transactions(
     data_path: Path,
     config_path: Path,
@@ -159,8 +161,10 @@ def list_transactions(
             output_format = OutputFormat.TABLE
 
     columns = ['id', *TRANSACTION_FIELDS]
+    all_txns = []
     if suggest_categories:
         columns.append('suggested_category')
+        all_txns = list(transactions_csv.read_many())
 
     field_types = {
         'id': 'string',
@@ -179,8 +183,12 @@ def list_transactions(
         ):
             continue
         dict_values = t.to_str_dict()
-        if suggest_categories:
-            dict_values['suggested_category'] = ''
+        if suggest_categories and (not t.category or t.category == 'uncategorized'):
+            results = suggestions.suggest_categories(t.description, all_txns)
+            if results:
+                dict_values['suggested_category'] = results[0][0]
+            else:
+                dict_values['suggested_category'] = ''
         row_dicts.append(dict_values)
 
     # sort by date before output
@@ -206,12 +214,14 @@ def output_rows_to_table(row_dicts: list[dict], columns: list[str], title: str =
 
 
 def output_rows_as_csv(row_dicts: list[dict], columns: list[str], output_path: Path):
+    empty_values = {c: '' for c in columns}
     to_stdout = not output_path or output_path == '-'
     output_file = sys.stdout if to_stdout else open(output_path, 'w')
     try:
         csv_writer = csv.DictWriter(output_file, fieldnames=columns)
         csv_writer.writeheader()
         for row_dict in row_dicts:
+            row_dict = empty_values | row_dict
             csv_writer.writerow(row_dict)
     finally:
         if not to_stdout and output_file:
@@ -272,7 +282,6 @@ def edit_transactions(
 
 
 def handle_edit_transaction(args):
-    # print(f'Editing transaction in {args.transactions}: {args.transaction_id}')
     if args.transaction_id is None and args.from_path is None:
         raise ValueError(
             'A transaction_id or --from argument must be applied. See --help for details.'
@@ -325,7 +334,11 @@ def find_importer(p: Path, importers: list):
 
 def handle_import_transactions(args):
     import_transactions(
-        args.data, args.config, args.csv_paths, importer_name=args.importer
+        args.data,
+        args.config,
+        args.csv_paths,
+        importer_name=args.importer,
+        dry_run=args.dry_run,
     )
 
 
@@ -482,6 +495,7 @@ def parse_args(system_args):
     )
     import_transactions_parser.add_argument(
         '--dry-run',
+        action='store_true',
         help='Run through the operation without actually persisting any changes',
     )
     import_transactions_parser.set_defaults(func=handle_import_transactions)

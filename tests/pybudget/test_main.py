@@ -26,7 +26,7 @@ def test_import_transactions(
     dummy_transactions: list[Transaction],
 ):
     # destination file where imported transactions go
-    data_path = tmp_path / 'pyb_transactions.csv'
+    data_path = tmp_path / 'pybudget_transactions.csv'
     # run the import
     main.import_transactions(
         data_path, config_file, [unimported_csv], importer_name=None, dry_run=False
@@ -49,7 +49,7 @@ def test_import_transactions(
 
 def test_list_transactions(tmp_path, config_file, imported_csv_transaction_data):
     # destination file where imported transactions go
-    data_path = tmp_path / 'pyb_transactions.csv'
+    data_path = tmp_path / 'pybudget_transactions.csv'
     output_path = tmp_path / 'output.csv'
     data_path.write_text(imported_csv_transaction_data)
     # Default options, aside from csv output
@@ -100,7 +100,9 @@ def test_list_transactions(tmp_path, config_file, imported_csv_transaction_data)
     )
     expected_header, *expected_lines = imported_csv_transaction_data.strip().split('\n')
     expected_header += ',suggested_category'
-    expected_lines = [l + ',' for l in expected_lines]
+    expected_lines = [
+        l + (',' if 'Category' in l else ',Category2') for l in expected_lines
+    ]
     expected_lines.sort()
     actual_header, *actual_lines = output_path.read_text().strip().split('\n')
 
@@ -119,7 +121,11 @@ def test_list_transactions(tmp_path, config_file, imported_csv_transaction_data)
     )
     expected_header, *expected_lines = imported_csv_transaction_data.strip().split('\n')
     expected_header += ',suggested_category'
-    expected_lines = [l + ',' for l in expected_lines if 'Category' not in l]
+    expected_lines = [
+        l + (',' if 'Category' in l else ',Category2')
+        for l in expected_lines
+        if 'Category' not in l
+    ]
     expected_lines.sort()
     actual_header, *actual_lines = output_path.read_text().strip().split('\n')
 

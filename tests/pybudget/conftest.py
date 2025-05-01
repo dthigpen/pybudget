@@ -7,7 +7,7 @@ import pytest
 
 @pytest.fixture
 def config_file(tmp_path):
-    config_path = tmp_path / 'pyb_config.json'
+    config_path = tmp_path / 'pybudget.json'
     content = {
         'categories': [
             {
@@ -90,6 +90,6 @@ def imported_csv_transaction_data():
 6,2025-01-06,Description 6,-106.00,My Institution,Category2
 7,2025-01-07,Description 7,-107.00,My Institution,
 8,2025-01-08,Description 8,-108.00,My Institution,
-4,2025-01-04,Description 4,-104.00,My Institution,Category1
+4,2025-01-04,Description 4,-104.00,My Institution,
 5,2025-01-05,Description 5,-105.00,My Institution,
 """
