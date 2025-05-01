@@ -38,7 +38,7 @@ pip install git+ssh://git@github.com:dthigpen/pybudget.git
    $ mkdir ~/budget && cd ~/budget
    ```
 2. Download a CSV of transactions from your bank. E.g. `my-bank-export-2025-02.csv`
-3. In your budget directory, create a new file called `pyb_config.json`with the content:
+3. In your budget directory, run `pybudget init`. You should see a file called `pybudget.json` with some of its contents looking like:
    ```json
    {
        "importers": [

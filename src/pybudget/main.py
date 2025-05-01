@@ -428,6 +428,33 @@ def import_transactions(
         print(f'Would have imported {len(added_transactions)} new transactions')
 
 
+def handle_init(args):
+    starter_config = {
+        'categories': [
+            {'Job': {'type': 'income'}},
+            {'Groceries': {'type': 'expense'}},
+        ],
+        'importers': [
+            {
+                'name': 'My Bank Checking',
+                'descriptionColumn': 'Description',
+                'amountColumn': 'Amount',
+                'accountValue': 'My Bank Checking',
+                'dateColumn': 'Date',
+                'dateFormat': '%Y-%m-%d',
+            }
+        ],
+    }
+    config_path = Path.cwd() / CONFIG_FILE_NAME
+    if config_path.is_file():
+        raise ValueError(
+            f'Unable to create pybudget.json. File already exists at {config_path}'
+        )
+    else:
+        config_path.write_text(json.dumps(starter_config, indent=4))
+        print(f'Created starter config at {config_path}')
+
+
 def handle_new_transaction(args):
     print(f'Adding a new transaction to {args.transactions}')
 
@@ -478,6 +505,12 @@ def parse_args(system_args):
     parser.set_defaults(func=lambda args: parser.print_help())
     add_common_arguments(parser)
     subparsers = parser.add_subparsers(dest='command')
+
+    # Init parser
+    init_parser = subparsers.add_parser(
+        'init', help='Initialize a starter pybudget.json'
+    )
+    init_parser.set_defaults(func=handle_init)
 
     # Import group
     import_parser = subparsers.add_parser('import', help='Import data')
@@ -542,12 +575,6 @@ def parse_args(system_args):
     list_transactions_parser.set_defaults(func=handle_list_transactions)
 
     # Edit command
-    #     list_parser = subparsers.add_parser('list', help='list data')
-    #     list_sub = list_parser.add_subparsers(dest='list_target', required=True)
-    #
-    #     list_transactions_parser = list_sub.add_parser(
-    #         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
-    #     )
     edit_parser = subparsers.add_parser('edit', help='Edit a transaction')
     edit_sub = edit_parser.add_subparsers(dest='edit_target', required=True)
     edit_txns_parser = edit_sub.add_parser(
