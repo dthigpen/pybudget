@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Literal
 from pathlib import Path
 from pybudget import csv_tools
-from pybudget.utils import str_to_datetime
+from pybudget.utils import str_to_datetime, datetime_to_str
 from pybudget.types import Transaction
 import difflib
 
@@ -89,7 +89,12 @@ def match_filters(txn, filters, field_types=None, strict=False):
                 row_val = float(row_val)
                 value = float(value)
             elif field_type == 'date':
-                value = str_to_datetime(value)
+                # leave as a string when doing ~
+                # otherwise use date value
+                if '~' in op:
+                    row_val = datetime_to_str(row_val)
+                else:
+                    value = str_to_datetime(value)
             elif field_type == 'int':
                 row_val = int(row_val)
                 value = int(value)

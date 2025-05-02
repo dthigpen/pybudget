@@ -323,6 +323,7 @@ def read_transactions_from_csv(
     csv_path: Path,
     column_names: dict = None,
     default_values: dict = None,
+    trim_whitespace=True,
 ) -> list[Transaction]:
     column_names = column_names or {}
     default_values = default_values or {}
@@ -361,6 +362,10 @@ def read_transactions_from_csv(
                 raise ValueError(
                     f'Expected to receive column names or defaults for {csv_path}. Missing field {missing_fields}'
                 )
+            if trim_whitespace:
+                actual_field_values = {
+                    k: v.strip() for k, v in actual_field_values.items()
+                }
             yield Transaction.from_str_dict(actual_field_values)
     finally:
         if csv_path != '-' and csvfile:
