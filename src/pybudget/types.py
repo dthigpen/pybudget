@@ -51,5 +51,29 @@ class Transaction:
                 row[field_name] = str(val)
         return row
 
+    def to_json_dict(self) -> dict:
+        # NOTE note sure if this is the best thing to do here but it keeps the json clean
+        data = {k:v for k,v in self.to_dict().items() if v is not None and v is not ''}
+        data.pop('id',None)
+        
+        if (date := data.get('date')):
+            data['date'] = datetime_to_str(date)
+        return data
+
+    @classmethod
+    def from_json_dict(cls, json_dict: dict) -> 'Transaction':
+        kwargs = {}
+        for f in fields(cls):
+            field_name = f.name
+            field_type = f.type
+            value = json_dict.get(field_name)
+            if value is None:
+                continue
+            if field_type == datetime:
+                value = str_to_datetime(value)
+            kwargs[field_name] = value
+            
+        return cls(**kwargs)
+        
     def to_dict(self) -> dict:
         return asdict(self)

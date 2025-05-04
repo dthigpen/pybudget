@@ -7,7 +7,7 @@ from enum import Enum
 from typing import Literal
 from pathlib import Path
 from pybudget import csv_tools
-from pybudget.utils import str_to_datetime, datetime_to_str
+from pybudget.utils import str_to_datetime, datetime_to_str, safe_file_update_context
 from pybudget.types import Transaction
 import difflib
 
@@ -15,8 +15,11 @@ from rich import box
 from rich.console import Console
 from rich.table import Table
 
-DATA_FILE_NAME = 'pybudget_transactions.csv'
-CONFIG_FILE_NAME = 'pybudget.json'
+from tinydb import TinyDB, Query
+
+
+DATA_FILE_NAME = 'pybudget_db.json'
+CONFIG_FILE_NAME = 'pybudget_config.json'
 TRANSACTION_FIELDS = ['date', 'description', 'amount', 'account', 'category']
 DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
 
@@ -50,7 +53,7 @@ def __dict_to_ordered_values(d: dict, keys: list):
 
 def handle_list_transactions(args):
     list_transactions(
-        args.data,
+        args.db,
         args.config,
         args.filter,
         only_uncategorized=args.uncategorized,
@@ -136,7 +139,7 @@ from pybudget import suggestions
 
 
 def list_transactions(
-    data_path: Path,
+    db_path: Path,
     config_path: Path,
     filters: list[str] = None,
     only_uncategorized=False,
@@ -146,7 +149,7 @@ def list_transactions(
 ):
     filters = [parse_filter_arg(f) for f in filters] if filters else []
 
-    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    transactions_csv = csv_tools.TransactionsCSV(db_path)
     if not output_format:
         if output_path:
             output_format = OutputFormat.CSV
@@ -234,7 +237,7 @@ def output_rows_as_csv(row_dicts: list[dict], columns: list[str], output_path: P
 
 
 def edit_transactions(
-    data_path: Path,
+    db_path: Path,
     config_path: Path,
     from_path: Path | Literal['-'],
     transaction_id: str = None,
@@ -245,7 +248,7 @@ def edit_transactions(
     new_category: str = None,
     dry_run=False,
 ):
-    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    transactions_csv = csv_tools.TransactionsCSV(db_path)
     column_names = {c: c for c in DATA_FILE_COLUMNS}
     updated = []
     txn_update_dicts = []
@@ -292,7 +295,7 @@ def handle_edit_transaction(args):
             'A transaction_id or --from argument must be applied. See --help for details.'
         )
     edit_transactions(
-        args.data,
+        args.db,
         args.config,
         args.from_path,
         args.transaction_id,
@@ -338,13 +341,14 @@ def find_importer(p: Path, importers: list):
 
 
 def handle_import_transactions(args):
-    import_transactions(
-        args.data,
-        args.config,
-        args.csv_paths,
-        importer_name=args.importer,
-        dry_run=args.dry_run,
-    )
+    with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
+        import_transactions(
+            db_path,
+            args.config,
+            args.csv_paths,
+            importer_name=args.importer,
+            dry_run=args.dry_run,
+        )
 
 
 def validate_transaction(txn: Transaction):
@@ -360,13 +364,16 @@ def validate_transaction(txn: Transaction):
 
 
 def import_transactions(
-    data_path: Path,
+    db_path: Path,
     config_path: Path,
     csv_paths: list[Path],
     importer_name: str = None,
-    dry_run=False,
 ):
-    transactions_csv = csv_tools.TransactionsCSV(data_path)
+    # open db
+    db = TinyDB(db_path)
+    transactions = db.table('transactions')
+
+    # load config
     config = load_config(config_path)
     importers = config.get('importers')
     named_importer = None
@@ -377,6 +384,7 @@ def import_transactions(
         if not named_importer:
             raise ValueError(f'Failed to find importer by name "{importer_name}"')
     added_transactions = []
+    added_ids = []
     for p in csv_paths:
         # find matching importer or use named one
         matching_importer = (
@@ -415,30 +423,27 @@ def import_transactions(
             # where transactions "add" to the credit
             if matching_importer.get('flipSign'):
                 transaction.amount = -1 * transaction.amount
-
             transactions_in_file.append(transaction)
-        if not dry_run:
-            added_transactions.extend(transactions_csv.add(*transactions_in_file))
-        else:
-            added_transactions.extend(transactions_in_file)
+
+        # insert all transactions from file
+        if transactions_in_file:
+            json_txns_to_insert = [t.to_json_dict() for t in transactions_in_file]
+            added_ids += transactions.insert_multiple(json_txns_to_insert)
 
         print(f'Finished importing {p}')
 
+    # table needs str fields only so convert txn -> dict -> str value dict
     columns = ['id', *TRANSACTION_FIELDS]
-    new_txn_dicts = [t.to_str_dict() for t in added_transactions]
-    output_rows_to_table(new_txn_dicts, columns)
-    if not dry_run:
-        print(f'Imported {len(added_transactions)} new transactions')
-    else:
-        print(f'Would have imported {len(added_transactions)} new transactions')
+    new_txn_dicts = ({**t, 'id': t.doc_id} for t in transactions.get(doc_ids=added_ids))
+    new_txn_str_dicts = (
+        Transaction.from_json_dict(t).to_str_dict() for t in new_txn_dicts
+    )
+    output_rows_to_table(new_txn_str_dicts, columns)
+    print(f'Imported {len(added_ids)} new transactions')
 
 
 def handle_init(args):
     starter_config = {
-        'categories': [
-            {'Job': {'type': 'income'}},
-            {'Groceries': {'type': 'expense'}},
-        ],
         'importers': [
             {
                 'name': 'My Bank Checking',
@@ -452,12 +457,18 @@ def handle_init(args):
     }
     config_path = Path.cwd() / CONFIG_FILE_NAME
     if config_path.is_file():
-        raise ValueError(
-            f'Unable to create pybudget.json. File already exists at {config_path}'
-        )
+        print('Config file already exists at {config_path}')
     else:
         config_path.write_text(json.dumps(starter_config, indent=4))
         print(f'Created starter config at {config_path}')
+    db_path = Path.cwd() / DATA_FILE_NAME
+    if db_path.is_file():
+        print('Database file already exists at {db_path}')
+    else:
+        db = TinyDB(db_path)
+        transactions = db.table('transactions')
+        categories = db.table('categories')
+        print(f'Created database file at {db_path}')
 
 
 def handle_new_transaction(args):
@@ -484,7 +495,6 @@ def existing_json_file(p):
 
 def load_config(p):
     default_config = {
-        'categories': [],
         'importers': [],
     }
     actual = existing_json_file(p)
@@ -494,10 +504,11 @@ def load_config(p):
 def parse_args(system_args):
     def add_common_arguments(parser):
         parser.add_argument(
-            '--data',
+            '--db',
+            # dest='data', # TODO remove this eventually
             type=Path,
             default=Path.cwd() / DATA_FILE_NAME,
-            help='Path to the transactions CSV',
+            help='Path to the pybudget database file',
         )
         parser.add_argument(
             '--config',
