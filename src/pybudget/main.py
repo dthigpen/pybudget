@@ -149,7 +149,9 @@ def list_transactions(
 ):
     filters = [parse_filter_arg(f) for f in filters] if filters else []
 
-    transactions_csv = csv_tools.TransactionsCSV(db_path)
+    db = TinyDB(db_path)
+    transactions = db.table('transactions')
+
     if not output_format:
         if output_path:
             output_format = OutputFormat.CSV
@@ -172,7 +174,9 @@ def list_transactions(
     all_txns = []
     if suggest_categories:
         columns.append('suggested_category')
-        all_txns = list(transactions_csv.read_many())
+        all_txns = list(
+            Transaction.from_json_dict({**t, 'id': t.doc_id}), transactions.all()
+        )
 
     field_types = {
         'id': 'string',
@@ -182,9 +186,10 @@ def list_transactions(
         'category': 'string',
         'account': 'string',
     }
-    # TODO do not keep all results in memory, use generator
+    # TODO build up a Query object instead of manually filtering all txns
     row_dicts = []
-    for t in transactions_csv.read_many():
+    for t in transactions.all():
+        t = Transaction.from_json_dict({**t, 'id': t.doc_id})
         if (only_uncategorized and t.category) or (
             filters
             and not match_filters(t, filters, field_types=field_types, strict=True)
@@ -246,16 +251,21 @@ def edit_transactions(
     new_amount: float = None,
     new_account: str = None,
     new_category: str = None,
-    dry_run=False,
 ):
-    transactions_csv = csv_tools.TransactionsCSV(db_path)
+    # open db
+    db = TinyDB(db_path)
+    transactions = db.table('transactions')
+
     column_names = {c: c for c in DATA_FILE_COLUMNS}
     updated = []
     txn_update_dicts = []
-
+    updated_ids = []
     if from_path:
-        txn_update_dicts = csv_tools.read_dicts_from_csv(
-            from_path, column_names_mapping=column_names
+        txn_update_dicts = (
+            {**Transaction.from_str_dict(t).to_json_dict(), 'id': t.get('id', None)}
+            for t in csv_tools.read_dicts_from_csv(
+                from_path, column_names_mapping=column_names
+            )
         )
     elif transaction_id is not None:
         updates_dict = {
@@ -276,17 +286,28 @@ def edit_transactions(
             raise ValueError(
                 f'Column named "id" must be present for updated to take place'
             )
-
-        orig_transaction = transactions_csv.read_one(txn_id_to_update)
-        updated_transaction = Transaction.from_str_dict(
-            orig_transaction.to_str_dict() | txn_updates_dict
+        txn_id_to_update = int(txn_id_to_update)
+        db_txn = transactions.get(doc_id=txn_id_to_update)
+        orig_transaction = Transaction.from_json_dict({**db_txn, 'id': db_txn.doc_id})
+        orig_transaction_dict = orig_transaction.to_json_dict()
+        updated_transaction = Transaction.from_json_dict(
+            orig_transaction_dict | txn_updates_dict
         )
-        if not dry_run:
-            transactions_csv.update(updated_transaction)
-        updated.append(updated_transaction)
+        transactions.update(
+            updated_transaction.to_json_dict(), doc_ids=[txn_id_to_update]
+        )
+        updated_ids.append(txn_id_to_update)
 
-    txn_dicts = [t.to_str_dict() for t in updated]
-    output_rows_to_table(txn_dicts, DATA_FILE_COLUMNS, title='Updated Transactions')
+    updated_txn_dicts = (
+        {**t, 'id': t.doc_id} for t in transactions.get(doc_ids=updated_ids)
+    )
+    updated_txn_str_dicts = (
+        Transaction.from_json_dict(t).to_str_dict() for t in updated_txn_dicts
+    )
+
+    output_rows_to_table(
+        updated_txn_str_dicts, DATA_FILE_COLUMNS, title='Updated Transactions'
+    )
 
 
 def handle_edit_transaction(args):
@@ -294,17 +315,17 @@ def handle_edit_transaction(args):
         raise ValueError(
             'A transaction_id or --from argument must be applied. See --help for details.'
         )
-    edit_transactions(
-        args.db,
-        args.config,
-        args.from_path,
-        args.transaction_id,
-        new_date=args.date,
-        new_amount=args.amount,
-        new_account=args.account,
-        new_category=args.category,
-        dry_run=args.dry_run,
-    )
+    with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
+        edit_transactions(
+            db_path,
+            args.config,
+            args.from_path,
+            args.transaction_id,
+            new_date=args.date,
+            new_amount=args.amount,
+            new_account=args.account,
+            new_category=args.category,
+        )
 
 
 def handle_delete_transaction(args):
@@ -347,7 +368,6 @@ def handle_import_transactions(args):
             args.config,
             args.csv_paths,
             importer_name=args.importer,
-            dry_run=args.dry_run,
         )
 
 
@@ -505,7 +525,6 @@ def parse_args(system_args):
     def add_common_arguments(parser):
         parser.add_argument(
             '--db',
-            # dest='data', # TODO remove this eventually
             type=Path,
             default=Path.cwd() / DATA_FILE_NAME,
             help='Path to the pybudget database file',
