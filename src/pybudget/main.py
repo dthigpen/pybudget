@@ -258,15 +258,28 @@ def edit_transactions(
 
     column_names = {c: c for c in DATA_FILE_COLUMNS}
     updated = []
-    txn_update_dicts = []
+    # txn_update_dicts = []
+    update_delete_pairs = []
     updated_ids = []
     if from_path:
-        txn_update_dicts = (
-            {**Transaction.from_str_dict(t).to_json_dict(), 'id': t.get('id', None)}
-            for t in csv_tools.read_dicts_from_csv(
-                from_path, column_names_mapping=column_names
-            )
+        # read in rows from the csv
+        # converts to the right data types then converts it back to a dict
+        csv_dicts = csv_tools.read_dicts_from_csv(
+            from_path, column_names_mapping=column_names
         )
+        for csv_dict in csv_dicts:
+            # rows with empty values will be treating as removing/reseting that field
+            # otherwise use the value
+            keys_to_delete = {k for k,v in csv_dict.items() if v in ('', None)}
+            updates_dict = {k:v for k,v in csv_dict.items() if k not in keys_to_delete}
+            update_delete_pairs .append((updates_dict, keys_to_delete))
+        #     
+        # txn_update_dicts = (
+        #     {**Transaction.from_str_dict(t).to_json_dict(), 'id': t.get('id', None)}
+        #     for t in csv_tools.read_dicts_from_csv(
+        #         from_path, column_names_mapping=column_names
+        #     )
+        # )
     elif transaction_id is not None:
         updates_dict = {
             'id': transaction_id,
@@ -276,33 +289,33 @@ def edit_transactions(
             'account': new_account,
             'category': new_category,
         }
-        updates_dict = {k: v for k, v in updates_dict.items() if v is not None}
-        txn_update_dicts = [updates_dict]
+        keys_to_delete = {k for k,v in updates_dict.items() if v in ('', None)}
+        updates_dict = {k:v for f,v in updates_dict.items() if k not in keys_to_delete}
+        update_delete_pairs .append((updates_dict, keys_to_delete))
     else:
         raise ValueError('No transactions specified to edit')
-    for txn_updates_dict in txn_update_dicts:
-        txn_id_to_update = txn_updates_dict.get('id', None)
+    for updates_dict, keys_to_delete in update_delete_pairs:
+        txn_id_to_update = updates_dict.get('id', None)
         if txn_id_to_update is None:
             raise ValueError(
                 f'Column named "id" must be present for updated to take place'
             )
         txn_id_to_update = int(txn_id_to_update)
         db_txn = transactions.get(doc_id=txn_id_to_update)
-        orig_transaction = Transaction.from_json_dict({**db_txn, 'id': db_txn.doc_id})
-        orig_transaction_dict = orig_transaction.to_json_dict()
+        # merge the original and updates dicts, then convert to txn
+        # so that data types get converted
         updated_transaction = Transaction.from_json_dict(
-            orig_transaction_dict | txn_updates_dict
+            db_txn | updates_dict
         )
+        # turn into a dict and drop keys to delete
+        updated_transaction_dict = {k:v for k,v in updated_transaction.to_json_dict().items() if k not in keys_to_delete}
         transactions.update(
-            updated_transaction.to_json_dict(), doc_ids=[txn_id_to_update]
+            updated_transaction_dict, doc_ids=[txn_id_to_update]
         )
         updated_ids.append(txn_id_to_update)
 
-    updated_txn_dicts = (
-        {**t, 'id': t.doc_id} for t in transactions.get(doc_ids=updated_ids)
-    )
     updated_txn_str_dicts = (
-        Transaction.from_json_dict(t).to_str_dict() for t in updated_txn_dicts
+        {**Transaction.from_json_dict({**t}).to_str_dict(), 'id': str(t.doc_id)} for t in transactions.get(doc_ids=updated_ids)
     )
 
     output_rows_to_table(

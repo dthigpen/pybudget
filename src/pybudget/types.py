@@ -10,12 +10,14 @@ class Transaction:
     date: datetime = None
     description: str = None
     amount: float = None
-    id: Optional[str] = None
     account: Optional[str] = None
     category: Optional[str] = None
 
     @classmethod
     def from_str_dict(cls, row: dict) -> 'Transaction':
+        '''
+        Build a transaction from a dict where every value is a string
+        '''
         kwargs = {}
         for f in fields(cls):
             field_name = f.name
@@ -35,35 +37,37 @@ class Transaction:
         return cls(**kwargs)
 
     def to_str_dict(self) -> dict:
+        '''Convert this transaction to a dict where every value is a string'''
         row = {}
-        # TODO determine if this should output None as '' or not include at all
         for f in fields(self):
             field_name = f.name
             val = getattr(self, f.name)
-            if isinstance(val, datetime):
+            if val is None:
+                row[field_name] = ''
+            elif isinstance(val, datetime):
                 row[field_name] = datetime_to_str(val)
             elif field_name == 'amount':
                 # format to two decimal places for money
                 row[field_name] = f'{val:.2f}'
-            elif val is None:
-                row[field_name] = ''
             else:
                 row[field_name] = str(val)
         return row
 
     def to_json_dict(self) -> dict:
+        '''Converts this transaction to a dict that can serialize into JSON'''
         # NOTE note sure if this is the best thing to do here but it keeps the json clean
-        data = {
-            k: v for k, v in self.to_dict().items() if v is not None and v is not ''
-        }
-        data.pop('id', None)
-
+        # data = {
+        #     k: v for k, v in self.to_dict().items() if v is not None and v is not ''
+        # }
+        # data.pop('id', None)
+        data = self.to_dict()
         if date := data.get('date'):
             data['date'] = datetime_to_str(date)
         return data
 
     @classmethod
     def from_json_dict(cls, json_dict: dict) -> 'Transaction':
+        '''Builds a transaction from a JSON formatted dict'''
         kwargs = {}
         for f in fields(cls):
             field_name = f.name
@@ -71,10 +75,11 @@ class Transaction:
             value = json_dict.get(field_name)
             if value is None:
                 continue
-            if field_type == datetime:
+            if field_type == float:
+                value = float(value)
+            elif field_type == datetime:
                 value = str_to_datetime(value)
             kwargs[field_name] = value
-
         return cls(**kwargs)
 
     def to_dict(self) -> dict:

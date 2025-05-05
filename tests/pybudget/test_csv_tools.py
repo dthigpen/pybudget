@@ -157,3 +157,7 @@ def test_read_transactions_from_csv(tmp_path):
         )
     )
     assert actual_transactions == expected_transactions
+
+
+def test_read_dicts_from_csv():
+    pass
