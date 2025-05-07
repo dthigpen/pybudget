@@ -14,30 +14,34 @@ class Transaction:
     category: Optional[str] = None
 
     @classmethod
-    def from_str_dict(cls, row: dict) -> 'Transaction':
-        '''
+    def from_csv_dict(cls, row: dict) -> 'Transaction':
+        """
         Build a transaction from a dict where every value is a string
-        '''
+        """
         kwargs = {}
+        print(f'ROW {row=}')
         for f in fields(cls):
             field_name = f.name
             field_type = f.type
-            value = row.get(field_name)
+            value = row.get(field_name, '')
+            if value is None:
+                value = ''
+            value = value.strip()
+            # treat any blank string as being missing
+            if not value:
+                continue
             if field_type == datetime:
-                kwargs[field_name] = str_to_datetime(value) if value else None
+                kwargs[field_name] = str_to_datetime(value)
             elif field_type is float:
-                kwargs[field_name] = float(value) if value else 0.0
+                kwargs[field_name] = float(value)
             elif field_type == Optional[str] or field_type is str:
-                kwargs[field_name] = (
-                    value.strip() if value is not None and value.strip() else None
-                )
-
+                kwargs[field_name] = value
             else:
                 raise ValueError(f'Unsupported field type: {field_type}')
         return cls(**kwargs)
 
-    def to_str_dict(self) -> dict:
-        '''Convert this transaction to a dict where every value is a string'''
+    def to_csv_dict(self) -> dict:
+        """Convert this transaction to a dict where every value is a string"""
         row = {}
         for f in fields(self):
             field_name = f.name
@@ -53,21 +57,16 @@ class Transaction:
                 row[field_name] = str(val)
         return row
 
-    def to_json_dict(self) -> dict:
-        '''Converts this transaction to a dict that can serialize into JSON'''
-        # NOTE note sure if this is the best thing to do here but it keeps the json clean
-        # data = {
-        #     k: v for k, v in self.to_dict().items() if v is not None and v is not ''
-        # }
-        # data.pop('id', None)
+    def to_tinydb_dict(self) -> dict:
+        """Converts this transaction to a dict that can serialize into JSON"""
         data = self.to_dict()
         if date := data.get('date'):
             data['date'] = datetime_to_str(date)
         return data
 
     @classmethod
-    def from_json_dict(cls, json_dict: dict) -> 'Transaction':
-        '''Builds a transaction from a JSON formatted dict'''
+    def from_tinydb_dict(cls, json_dict: dict) -> 'Transaction':
+        """Builds a transaction from a JSON formatted dict"""
         kwargs = {}
         for f in fields(cls):
             field_name = f.name

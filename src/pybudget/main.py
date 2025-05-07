@@ -175,7 +175,7 @@ def list_transactions(
     if suggest_categories:
         columns.append('suggested_category')
         all_txns = list(
-            Transaction.from_json_dict({**t, 'id': t.doc_id}), transactions.all()
+            Transaction.from_tinydb_dict({**t, 'id': t.doc_id}), transactions.all()
         )
 
     field_types = {
@@ -186,16 +186,18 @@ def list_transactions(
         'category': 'string',
         'account': 'string',
     }
+
     # TODO build up a Query object instead of manually filtering all txns
     row_dicts = []
     for t in transactions.all():
-        t = Transaction.from_json_dict({**t, 'id': t.doc_id})
+        doc_id = t.doc_id
+        t = Transaction.from_tinydb_dict(t)
         if (only_uncategorized and t.category) or (
             filters
             and not match_filters(t, filters, field_types=field_types, strict=True)
         ):
             continue
-        dict_values = t.to_str_dict()
+        dict_values = t.to_csv_dict() | {'id': str(doc_id)}
         if suggest_categories and (not t.category or t.category == 'uncategorized'):
             results = suggestions.suggest_categories(t.description, all_txns)
             if results:
@@ -270,12 +272,14 @@ def edit_transactions(
         for csv_dict in csv_dicts:
             # rows with empty values will be treating as removing/reseting that field
             # otherwise use the value
-            keys_to_delete = {k for k,v in csv_dict.items() if v in ('', None)}
-            updates_dict = {k:v for k,v in csv_dict.items() if k not in keys_to_delete}
-            update_delete_pairs .append((updates_dict, keys_to_delete))
-        #     
+            keys_to_delete = {k for k, v in csv_dict.items() if v in ('', None)}
+            updates_dict = {
+                k: v for k, v in csv_dict.items() if k not in keys_to_delete
+            }
+            update_delete_pairs.append((updates_dict, keys_to_delete))
+        #
         # txn_update_dicts = (
-        #     {**Transaction.from_str_dict(t).to_json_dict(), 'id': t.get('id', None)}
+        #     {**Transaction.from_csv_dict(t).to_tinydb_dict(), 'id': t.get('id', None)}
         #     for t in csv_tools.read_dicts_from_csv(
         #         from_path, column_names_mapping=column_names
         #     )
@@ -289,9 +293,11 @@ def edit_transactions(
             'account': new_account,
             'category': new_category,
         }
-        keys_to_delete = {k for k,v in updates_dict.items() if v in ('', None)}
-        updates_dict = {k:v for f,v in updates_dict.items() if k not in keys_to_delete}
-        update_delete_pairs .append((updates_dict, keys_to_delete))
+        keys_to_delete = {k for k, v in updates_dict.items() if v in ('', None)}
+        updates_dict = {
+            k: v for f, v in updates_dict.items() if k not in keys_to_delete
+        }
+        update_delete_pairs.append((updates_dict, keys_to_delete))
     else:
         raise ValueError('No transactions specified to edit')
     for updates_dict, keys_to_delete in update_delete_pairs:
@@ -304,18 +310,19 @@ def edit_transactions(
         db_txn = transactions.get(doc_id=txn_id_to_update)
         # merge the original and updates dicts, then convert to txn
         # so that data types get converted
-        updated_transaction = Transaction.from_json_dict(
-            db_txn | updates_dict
-        )
+        updated_transaction = Transaction.from_tinydb_dict(db_txn | updates_dict)
         # turn into a dict and drop keys to delete
-        updated_transaction_dict = {k:v for k,v in updated_transaction.to_json_dict().items() if k not in keys_to_delete}
-        transactions.update(
-            updated_transaction_dict, doc_ids=[txn_id_to_update]
-        )
+        updated_transaction_dict = {
+            k: v
+            for k, v in updated_transaction.to_tinydb_dict().items()
+            if k not in keys_to_delete
+        }
+        transactions.update(updated_transaction_dict, doc_ids=[txn_id_to_update])
         updated_ids.append(txn_id_to_update)
 
     updated_txn_str_dicts = (
-        {**Transaction.from_json_dict({**t}).to_str_dict(), 'id': str(t.doc_id)} for t in transactions.get(doc_ids=updated_ids)
+        {**Transaction.from_tinydb_dict({**t}).to_csv_dict(), 'id': str(t.doc_id)}
+        for t in transactions.get(doc_ids=updated_ids)
     )
 
     output_rows_to_table(
@@ -440,17 +447,17 @@ def import_transactions(
         }
         # get default value mapping for importer
         default_values = {
-            'date': matching_importer.get('dateValue'),
-            'description': matching_importer.get('descriptionValue'),
-            'amount': matching_importer.get('amountValue'),
-            'account': matching_importer.get('accountValue'),
-            'category': matching_importer.get('categoryValue'),
+            'date': matching_importer.get('dateValue', ''),
+            'description': matching_importer.get('descriptionValue', ''),
+            'amount': matching_importer.get('amountValue', ''),
+            'account': matching_importer.get('accountValue', ''),
+            'category': matching_importer.get('categoryValue', ''),
         }
         transactions_in_file = []
         for txn_dict in csv_tools.read_dicts_from_csv(
             p, column_names_mapping=column_names, default_values=default_values
         ):
-            transaction = Transaction.from_str_dict(txn_dict)
+            transaction = Transaction.from_csv_dict(txn_dict)
             validate_transaction(transaction)
             # flip sign for something like a credit card
             # where transactions "add" to the credit
@@ -460,16 +467,16 @@ def import_transactions(
 
         # insert all transactions from file
         if transactions_in_file:
-            json_txns_to_insert = [t.to_json_dict() for t in transactions_in_file]
+            json_txns_to_insert = [t.to_tinydb_dict() for t in transactions_in_file]
             added_ids += transactions.insert_multiple(json_txns_to_insert)
 
         print(f'Finished importing {p}')
 
     # table needs str fields only so convert txn -> dict -> str value dict
     columns = ['id', *TRANSACTION_FIELDS]
-    new_txn_dicts = ({**t, 'id': t.doc_id} for t in transactions.get(doc_ids=added_ids))
     new_txn_str_dicts = (
-        Transaction.from_json_dict(t).to_str_dict() for t in new_txn_dicts
+        {**Transaction.from_tinydb_dict(t).to_csv_dict(), 'id': str(t.doc_id)}
+        for t in transactions.get(doc_ids=added_ids)
     )
     output_rows_to_table(new_txn_str_dicts, columns)
     print(f'Imported {len(added_ids)} new transactions')

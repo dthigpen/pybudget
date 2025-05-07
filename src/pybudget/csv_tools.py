@@ -291,7 +291,7 @@ def process_dict(
     r: dict,
     column_names_mapping: dict = None,
     default_values: dict = None,
-    exclude_values = None,
+    exclude_values=None,
 ):
     column_names_mapping = column_names_mapping or {}
     default_values = default_values or {}
@@ -315,11 +315,13 @@ def read_dicts_from_csv(
     csv_path: Path,
     column_names_mapping: dict = None,
     default_values: dict = None,
-    exclude_values=None
+    exclude_values=None,
 ):
     with open_csv_file_or_stdin(csv_path) as reader:
         for r in reader:
-            yield process_dict(r, column_names_mapping, default_values, exclude_values=exclude_values)
+            yield process_dict(
+                r, column_names_mapping, default_values, exclude_values=exclude_values
+            )
 
 
 def read_transactions_from_csv(
