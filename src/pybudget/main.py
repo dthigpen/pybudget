@@ -9,6 +9,8 @@ from pathlib import Path
 from pybudget import csv_tools
 from pybudget.utils import str_to_datetime, datetime_to_str, safe_file_update_context
 from pybudget.types import Transaction
+from pybudget.filtering import construct_filters_query
+from pybudget import suggestions
 import difflib
 
 from rich import box
@@ -63,81 +65,6 @@ def handle_list_transactions(args):
     )
 
 
-def parse_filter_arg(filter_str):
-    match = re.match(r'(\w+)([!=<>~]{1,2})(.*)', filter_str)
-    if not match:
-        raise ValueError(f'Invalid filter: {filter_str}')
-    return match.group(1), match.group(2), match.group(3).strip()
-
-
-def match_filters(txn, filters, field_types=None, strict=False):
-    for field, op, value in filters:
-        row_val = getattr(txn, field)
-
-        # Determine type
-        if field_types and field in field_types:
-            field_type = field_types[field]
-        else:
-            # Default: string
-            field_type = 'string'
-        if row_val is None:
-            if field_type == 'string':
-                # coerce None to '' if doing a string search
-                row_val = ''
-            else:
-                return False
-
-        try:
-            if field_type == 'float':
-                row_val = float(row_val)
-                value = float(value)
-            elif field_type == 'date':
-                # leave as a string when doing ~
-                # otherwise use date value
-                if '~' in op:
-                    row_val = datetime_to_str(row_val)
-                else:
-                    value = str_to_datetime(value)
-            elif field_type == 'int':
-                row_val = int(row_val)
-                value = int(value)
-            else:
-                row_val = str(row_val).lower()
-                value = str(value).lower()
-        except (ValueError, TypeError) as e:
-            if strict:
-                raise ValueError(
-                    f"Error parsing field '{field}' with value '{row_val}' and filter value '{value}': {e}"
-                )
-            return False
-
-        operators = {'=', '!=', '>', '<', '>=', '<=', '~', '!~'}
-        if strict and op not in operators:
-            raise ValueError(f'Unknown filter operator: {op}')
-
-        if op == '=' and row_val != value:
-            return False
-        elif op == '!=' and row_val == value:
-            return False
-        elif op == '>' and row_val <= value:
-            return False
-        elif op == '<' and row_val >= value:
-            return False
-        elif op == '>=' and row_val < value:
-            return False
-        elif op == '<=' and row_val > value:
-            return False
-        elif op == '~' and value not in row_val:
-            return False
-        elif op == '!~' and value in row_val:
-            return False
-
-    return True
-
-
-from pybudget import suggestions
-
-
 def list_transactions(
     db_path: Path,
     config_path: Path,
@@ -147,8 +74,6 @@ def list_transactions(
     output_path: Path = None,
     suggest_categories: bool = False,
 ):
-    filters = [parse_filter_arg(f) for f in filters] if filters else []
-
     db = TinyDB(db_path)
     transactions = db.table('transactions')
 
@@ -178,25 +103,13 @@ def list_transactions(
             Transaction.from_tinydb_dict({**t, 'id': t.doc_id}), transactions.all()
         )
 
-    field_types = {
-        'id': 'string',
-        'date': 'date',
-        'description': 'string',
-        'amount': 'float',
-        'category': 'string',
-        'account': 'string',
-    }
-
-    # TODO build up a Query object instead of manually filtering all txns
     row_dicts = []
-    for t in transactions.all():
+    if only_uncategorized:
+        filters.append('category=')
+    filter_query = construct_filters_query(filters)
+    for t in transactions.search(filter_query):
         doc_id = t.doc_id
         t = Transaction.from_tinydb_dict(t)
-        if (only_uncategorized and t.category) or (
-            filters
-            and not match_filters(t, filters, field_types=field_types, strict=True)
-        ):
-            continue
         dict_values = t.to_csv_dict() | {'id': str(doc_id)}
         if suggest_categories and (not t.category or t.category == 'uncategorized'):
             results = suggestions.suggest_categories(t.description, all_txns)
