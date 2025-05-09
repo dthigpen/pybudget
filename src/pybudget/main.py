@@ -167,13 +167,15 @@ def edit_transactions(
     new_account: str = None,
     new_category: str = None,
 ):
+    """Update transactions with new values for each field. Either a specific one by id or multiple from a csv file
+    Note: to empty out a field, pass the empty string '' for that value
+    """
     # open db
     db = TinyDB(db_path)
     transactions = db.table('transactions')
 
     column_names = {c: c for c in DATA_FILE_COLUMNS}
     updated = []
-    # txn_update_dicts = []
     update_delete_pairs = []
     updated_ids = []
     if from_path:
@@ -185,18 +187,11 @@ def edit_transactions(
         for csv_dict in csv_dicts:
             # rows with empty values will be treating as removing/reseting that field
             # otherwise use the value
-            keys_to_delete = {k for k, v in csv_dict.items() if v in ('', None)}
+            keys_to_delete = {k for k, v in csv_dict.items() if v in ('',)}
             updates_dict = {
                 k: v for k, v in csv_dict.items() if k not in keys_to_delete
             }
             update_delete_pairs.append((updates_dict, keys_to_delete))
-        #
-        # txn_update_dicts = (
-        #     {**Transaction.from_csv_dict(t).to_tinydb_dict(), 'id': t.get('id', None)}
-        #     for t in csv_tools.read_dicts_from_csv(
-        #         from_path, column_names_mapping=column_names
-        #     )
-        # )
     elif transaction_id is not None:
         updates_dict = {
             'id': transaction_id,
@@ -206,9 +201,11 @@ def edit_transactions(
             'account': new_account,
             'category': new_category,
         }
-        keys_to_delete = {k for k, v in updates_dict.items() if v in ('', None)}
+        # filter out None since None is used when caller does not pass a value
+        updates_dict = {k: v for k, v in updates_dict.items() if v is not None}
+        keys_to_delete = {k for k, v in updates_dict.items() if v in ('',)}
         updates_dict = {
-            k: v for f, v in updates_dict.items() if k not in keys_to_delete
+            k: v for k, v in updates_dict.items() if k not in keys_to_delete
         }
         update_delete_pairs.append((updates_dict, keys_to_delete))
     else:
@@ -220,17 +217,24 @@ def edit_transactions(
                 f'Column named "id" must be present for updated to take place'
             )
         txn_id_to_update = int(txn_id_to_update)
-        db_txn = transactions.get(doc_id=txn_id_to_update)
-        # merge the original and updates dicts, then convert to txn
-        # so that data types get converted
-        updated_transaction = Transaction.from_tinydb_dict(db_txn | updates_dict)
-        # turn into a dict and drop keys to delete
-        updated_transaction_dict = {
-            k: v
-            for k, v in updated_transaction.to_tinydb_dict().items()
-            if k not in keys_to_delete
-        }
-        transactions.update(updated_transaction_dict, doc_ids=[txn_id_to_update])
+
+        def update_fields(updates: dict = None, deletes: set = None):
+            updates = updates or {}
+            deletes = deletes or set()
+
+            def transform(doc):
+                for k, v in updates.items():
+                    doc[k] = v
+                for k in deletes:
+                    if k in doc:
+                        del doc[k]
+
+            return transform
+
+        transactions.update(
+            update_fields(updates=updates_dict, deletes=keys_to_delete),
+            doc_ids=[txn_id_to_update],
+        )
         updated_ids.append(txn_id_to_update)
 
     updated_txn_str_dicts = (
