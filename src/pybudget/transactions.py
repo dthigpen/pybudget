@@ -32,10 +32,11 @@ def list_transactions(
     filters: list[str] = None,
     only_uncategorized=False,
     suggest_categories: bool = False,
+    ids: list[int] = None,
 ) -> list[Transaction]:
     db = TinyDB(db_path)
     transactions = db.table('transactions')
-
+    ids = ids or []
     all_txns = []
     if suggest_categories:
         all_txns = list(Transaction.from_tinydb_dict(t) for t in transactions.all())
@@ -45,18 +46,25 @@ def list_transactions(
     if only_uncategorized:
         filters.append('category=')
     filter_query = construct_filters_query(filters)
-    for t in transactions.search(filter_query) if filter_query else transactions.all():
-        doc_id = t.doc_id
-        t = Transaction.from_tinydb_dict(t)
-        if suggest_categories and (not t.category or t.category == 'uncategorized'):
-            results = suggestions.suggest_categories(t.description, all_txns)
-            if results:
-                t.suggested_category = results[0][0]
-            else:
-                t.suggested_category = None
-        txn_results.append(t)
+    if ids:
+        txn_results = [
+            Transaction.from_tinydb_dict(t) for t in transactions.get(doc_ids=ids)
+        ]
+    else:
+        for t in (
+            transactions.search(filter_query) if filter_query else transactions.all()
+        ):
+            doc_id = t.doc_id
+            t = Transaction.from_tinydb_dict(t)
+            if suggest_categories and (not t.category or t.category == 'uncategorized'):
+                results = suggestions.suggest_categories(t.description, all_txns)
+                if results:
+                    t.suggested_category = results[0][0]
+                else:
+                    t.suggested_category = None
+            txn_results.append(t)
 
-    # sort by date before output
+    # TODO sort in caller or near output
     txn_results.sort(key=lambda t: t.date)
     return txn_results
 

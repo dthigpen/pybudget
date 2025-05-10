@@ -72,6 +72,7 @@ def handle_list_transactions(args):
         args.filter,
         only_uncategorized=args.uncategorized,
         suggest_categories=args.suggest_categories,
+        ids=args.ids,
     )
 
     output_format = args.output_format
@@ -303,6 +304,13 @@ def parse_args(system_args):
         '--output-file',
         type=Path,
         help='The file to output to instead of stdout. File will be in CSV format.',
+    )
+    list_transactions_parser.add_argument(
+        '--id',
+        dest='ids',
+        type=int,
+        nargs='*',
+        help='The IDs of transactions. Useful if you just want to pull up details for specific transactions by ID.',
     )
 
     list_transactions_parser.set_defaults(func=handle_list_transactions)
