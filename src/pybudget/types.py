@@ -1,4 +1,4 @@
-from dataclasses import dataclass, fields, asdict
+from dataclasses import dataclass, field, fields, asdict
 from typing import Optional
 from datetime import datetime
 
@@ -12,6 +12,9 @@ class Transaction:
     amount: float = None
     account: Optional[str] = None
     category: Optional[str] = None
+    # Below fields are not represented in TinyDB
+    id: int = None
+    suggested_category: str = None
 
     @classmethod
     def from_csv_dict(cls, row: dict) -> 'Transaction':
@@ -19,7 +22,6 @@ class Transaction:
         Build a transaction from a dict where every value is a string
         """
         kwargs = {}
-        print(f'ROW {row=}')
         for f in fields(cls):
             field_name = f.name
             field_type = f.type
@@ -59,19 +61,26 @@ class Transaction:
 
     def to_tinydb_dict(self) -> dict:
         """Converts this transaction to a dict that can serialize into JSON"""
-        data = self.to_dict()
+        data = {
+            k: v
+            for k, v in self.to_dict().items()
+            if k not in ('id', 'suggested_category')
+        }
         if date := data.get('date'):
             data['date'] = datetime_to_str(date)
         return data
 
     @classmethod
-    def from_tinydb_dict(cls, json_dict: dict) -> 'Transaction':
+    def from_tinydb_dict(cls, tinydb_row: dict) -> 'Transaction':
         """Builds a transaction from a JSON formatted dict"""
         kwargs = {}
         for f in fields(cls):
             field_name = f.name
             field_type = f.type
-            value = json_dict.get(field_name)
+            # handle these later or not at all
+            if field_name in ('id', 'suggested_category'):
+                continue
+            value = tinydb_row.get(field_name)
             if value is None:
                 continue
             if field_type == float:
@@ -79,6 +88,8 @@ class Transaction:
             elif field_type == datetime:
                 value = str_to_datetime(value)
             kwargs[field_name] = value
+        if hasattr(tinydb_row, 'doc_id'):
+            kwargs['id'] = getattr(tinydb_row, 'doc_id')
         return cls(**kwargs)
 
     def to_dict(self) -> dict:

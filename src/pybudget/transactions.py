@@ -25,45 +25,43 @@ from tinydb import TinyDB, Query
 
 DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
 
+
 def list_transactions(
     db_path: Path,
     config_path: Path,
     filters: list[str] = None,
     only_uncategorized=False,
     suggest_categories: bool = False,
-) -> dict[str, str]:
+) -> list[Transaction]:
     db = TinyDB(db_path)
     transactions = db.table('transactions')
 
     all_txns = []
     if suggest_categories:
-        all_txns = list(
-            Transaction.from_tinydb_dict({**t, 'id': t.doc_id}), transactions.all()
-        )
+        all_txns = list(Transaction.from_tinydb_dict(t) for t in transactions.all())
 
     row_dicts = []
+    txn_results = []
     if only_uncategorized:
         filters.append('category=')
     filter_query = construct_filters_query(filters)
     for t in transactions.search(filter_query):
         doc_id = t.doc_id
         t = Transaction.from_tinydb_dict(t)
-        dict_values = t.to_csv_dict() | {'id': str(doc_id)}
         if suggest_categories and (not t.category or t.category == 'uncategorized'):
             results = suggestions.suggest_categories(t.description, all_txns)
             if results:
-                dict_values['suggested_category'] = results[0][0]
+                t.suggested_category = results[0][0]
             else:
-                dict_values['suggested_category'] = ''
-        row_dicts.append(dict_values)
+                t.suggested_category = None
+        txn_results.append(t)
 
     # sort by date before output
-    row_dicts.sort(key=lambda t: t['date'])
-    return row_dicts
+    txn_results.sort(key=lambda t: t.date)
+    return txn_results
 
 
-
-def find_importer(p: Path, importers: list):
+def find_importer(p: Path, importers: list) -> dict:
     """Find an importer for the given csv path"""
     matching_importer = None
     for importer in importers:
@@ -97,7 +95,7 @@ def import_transactions(
     config_path: Path,
     csv_paths: list[Path],
     importer_name: str = None,
-) -> dict[str, str]:
+) -> list[Transaction]:
     # open db
     db = TinyDB(db_path)
     transactions = db.table('transactions')
@@ -161,11 +159,9 @@ def import_transactions(
 
         print(f'Finished importing {p}')
 
-    new_txn_str_dicts = (
-        {**Transaction.from_tinydb_dict(t).to_csv_dict(), 'id': str(t.doc_id)}
-        for t in transactions.get(doc_ids=added_ids)
+    return (
+        Transaction.from_tinydb_dict(t) for t in transactions.get(doc_ids=added_ids)
     )
-    return new_txn_str_dicts
 
 
 def validate_transaction(txn: Transaction):
@@ -190,7 +186,7 @@ def edit_transactions(
     new_amount: float = None,
     new_account: str = None,
     new_category: str = None,
-) -> dict[str, str]:
+) -> list[Transaction]:
     """Update transactions with new values for each field. Either a specific one by id or multiple from a csv file
     Note: to empty out a field, pass the empty string '' for that value
     """
@@ -261,8 +257,6 @@ def edit_transactions(
         )
         updated_ids.append(txn_id_to_update)
 
-    updated_txn_str_dicts = (
-        {**Transaction.from_tinydb_dict({**t}).to_csv_dict(), 'id': str(t.doc_id)}
-        for t in transactions.get(doc_ids=updated_ids)
+    return (
+        Transaction.from_tinydb_dict(t) for t in transactions.get(doc_ids=updated_ids)
     )
-    return updated_txn_str_dicts
