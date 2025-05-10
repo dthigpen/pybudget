@@ -31,7 +31,6 @@ def parse_filter_arg(filter_str: str) -> tuple[str, str, str | float | int | dat
 
 def construct_filters_query(
     filters: list[str],
-    # filters: list[tuple[str, str, str | float | int | datetime]],
 ) -> Query:
     filters = [parse_filter_arg(f) for f in filters] if filters else []
     query = None

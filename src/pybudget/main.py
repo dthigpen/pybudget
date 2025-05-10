@@ -11,7 +11,11 @@ from pybudget.utils import str_to_datetime, datetime_to_str, safe_file_update_co
 from pybudget.types import Transaction
 from pybudget.filtering import construct_filters_query
 from pybudget import suggestions
-from pybudget.transactions import list_transactions, import_transactions, edit_transactions
+from pybudget.transactions import (
+    list_transactions,
+    import_transactions,
+    edit_transactions,
+)
 import difflib
 from tabulate import tabulate
 from tinydb import TinyDB, Query
@@ -38,7 +42,9 @@ def __dict_to_ordered_values(d: dict, keys: list):
     return list(map(lambda k: d.get(k, ''), keys))
 
 
-def __determine_output_format(output_format: OutputFormat, output_path: Path) -> OutputFormat:
+def __determine_output_format(
+    output_format: OutputFormat, output_path: Path
+) -> OutputFormat:
     if not output_format:
         if output_path:
             output_format = OutputFormat.CSV
@@ -57,7 +63,8 @@ def __determine_output_format(output_format: OutputFormat, output_path: Path) ->
         if output_format == OutputFormat.DEFAULT:
             output_format = OutputFormat.TABLE
     return output_format
-    
+
+
 def handle_list_transactions(args):
     txns = list_transactions(
         args.db,
@@ -67,8 +74,8 @@ def handle_list_transactions(args):
         suggest_categories=args.suggest_categories,
     )
 
-    output_format=args.output_format
-    output_path=args.output_file
+    output_format = args.output_format
+    output_path = args.output_file
     output_format = __determine_output_format(output_format, output_path)
     column_excludes = ['suggested_category'] if not args.suggest_categories else []
     if output_format == OutputFormat.TABLE:
@@ -80,11 +87,8 @@ def handle_list_transactions(args):
 
 
 def output_rows_to_table(row_dicts: list[dict], columns: list[str], title: str = None):
-    alias_mapping = {
-        'id': 'ID',
-        'suggesed_category': 'Suggested'
-    }
-    headers = list(map(lambda c: alias_mapping.get(c,c.title()), columns))
+    alias_mapping = {'id': 'ID', 'suggesed_category': 'Suggested'}
+    headers = list(map(lambda c: alias_mapping.get(c, c.title()), columns))
     rows = []
     for row_dict in row_dicts:
         values = __dict_to_ordered_values(row_dict, columns)
@@ -93,16 +97,23 @@ def output_rows_to_table(row_dicts: list[dict], columns: list[str], title: str =
     print(tabulate(rows, headers=headers, tablefmt='github'))
 
 
-def output_transactions_to_table(transactions: list[Transaction], exclude_columns=None, title: str = None):
+def output_transactions_to_table(
+    transactions: list[Transaction], exclude_columns=None, title: str = None
+):
     # Display fields with these names differently
     exclude_columns = exclude_columns or set()
-    all_columns_ordered = ['id', 'date', 'description', 'amount', 'account', 'category', 'suggested_category']
+    all_columns_ordered = [
+        'id',
+        'date',
+        'description',
+        'amount',
+        'account',
+        'category',
+        'suggested_category',
+    ]
     columns = [c for c in all_columns_ordered if c not in exclude_columns]
-    alias_mapping = {
-        'id': 'ID',
-        'suggesed_category': 'Suggested'
-    }
-    headers = list(map(lambda c: alias_mapping.get(c,c.title()), columns))
+    alias_mapping = {'id': 'ID', 'suggesed_category': 'Suggested'}
+    headers = list(map(lambda c: alias_mapping.get(c, c.title()), columns))
     rows = []
     for txn in transactions:
         values = __dict_to_ordered_values(txn.to_csv_dict(), columns)
@@ -111,9 +122,19 @@ def output_transactions_to_table(transactions: list[Transaction], exclude_column
     print(tabulate(rows, headers=headers, tablefmt='github'))
 
 
-def output_transactions_to_csv(transactions: list[Transaction], output_path: Path, exclude_columns=None):
+def output_transactions_to_csv(
+    transactions: list[Transaction], output_path: Path, exclude_columns=None
+):
     exclude_columns = exclude_columns or set()
-    all_columns_ordered = ['id', 'date', 'description', 'amount', 'account', 'category', 'suggested_category']
+    all_columns_ordered = [
+        'id',
+        'date',
+        'description',
+        'amount',
+        'account',
+        'category',
+        'suggested_category',
+    ]
     columns = [c for c in all_columns_ordered if c not in exclude_columns]
     to_stdout = not output_path or output_path == '-'
     output_file = sys.stdout if to_stdout else open(output_path, 'w')
@@ -122,7 +143,7 @@ def output_transactions_to_csv(transactions: list[Transaction], output_path: Pat
         csv_writer.writeheader()
         for txn in transactions:
             row_dict = txn.to_csv_dict()
-            row_dict = {k:row_dict.get(k,'') for k in columns}
+            row_dict = {k: row_dict.get(k, '') for k in columns}
             csv_writer.writerow(row_dict)
     finally:
         if not to_stdout and output_file:
@@ -145,19 +166,24 @@ def handle_edit_transaction(args):
             new_account=args.account,
             new_category=args.category,
         )
-        output_transactions_to_table(updated_txns, exclude_columns=['suggested_category'])
+        output_transactions_to_table(
+            updated_txns, exclude_columns=['suggested_category']
+        )
 
 
 def handle_import_transactions(args):
     with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
-        new_txns = list(import_transactions(
-            db_path,
-            args.config,
-            args.csv_paths,
-            importer_name=args.importer,
-        ))
+        new_txns = list(
+            import_transactions(
+                db_path,
+                args.config,
+                args.csv_paths,
+                importer_name=args.importer,
+            )
+        )
         output_transactions_to_table(new_txns, exclude_columns=['suggested_category'])
         print(f'Imported {len(new_txns)} new transactions')
+
 
 def handle_init(args):
     starter_config = {
@@ -187,9 +213,11 @@ def handle_init(args):
         categories = db.table('categories')
         print(f'Created database file at {db_path}')
 
+
 def handle_delete_transaction(args):
     with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
         delete_transactions()
+
 
 def parse_args(system_args):
     def add_common_arguments(parser):
@@ -288,7 +316,6 @@ def parse_args(system_args):
     add_common_arguments(delete_txns_parser)
     delete_txns_parser.set_defaults(func=handle_delete_transaction)
 
-        
     # Edit command
     edit_parser = subparsers.add_parser('edit', help='Edit a transaction')
     edit_sub = edit_parser.add_subparsers(dest='edit_target', required=True)

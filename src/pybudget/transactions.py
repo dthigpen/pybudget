@@ -45,7 +45,7 @@ def list_transactions(
     if only_uncategorized:
         filters.append('category=')
     filter_query = construct_filters_query(filters)
-    for t in transactions.search(filter_query):
+    for t in transactions.search(filter_query) if filter_query else transactions.all():
         doc_id = t.doc_id
         t = Transaction.from_tinydb_dict(t)
         if suggest_categories and (not t.category or t.category == 'uncategorized'):
