@@ -17,11 +17,7 @@ from pybudget.transactions import (
     edit_transactions,
 )
 import difflib
-
-from rich import box
-from rich.console import Console
-from rich.table import Table
-
+from tabulate import tabulate
 from tinydb import TinyDB, Query
 
 
@@ -40,18 +36,6 @@ class OutputFormat(Enum):
 class OutputLocation(Enum):
     STDOUT = 'stdout'
     FILE = 'file'
-
-
-def __create_transactions_table(title: str = None) -> Table:
-    title = title or 'Transactions'
-    table = Table(show_header=True, box=box.MARKDOWN, title=title)
-    table.add_column('ID', no_wrap=True)
-    table.add_column('Date', no_wrap=True, width=12)
-    table.add_column('Description', no_wrap=True)
-    table.add_column('Amount', no_wrap=True, justify='right')
-    table.add_column('Account', no_wrap=True, justify='right')
-    table.add_column('Category', no_wrap=True)
-    return table
 
 
 def __dict_to_ordered_values(d: dict, keys: list):
@@ -105,15 +89,14 @@ def handle_list_transactions(args):
 
 
 def output_rows_to_table(row_dicts: list[dict], columns: list[str], title: str = None):
-    console = Console()
-    table = __create_transactions_table(title=title)
-    if 'suggested_category' in columns:
-        table.add_column('Suggested', no_wrap=True)
+    alias_mapping = {'id': 'ID', 'suggesed_category': 'Suggested'}
+    headers = list(map(lambda c: alias_mapping.get(c, c.title()), columns))
+    rows = []
     for row_dict in row_dicts:
         values = __dict_to_ordered_values(row_dict, columns)
-        table.add_row(*values)
+        rows.append(values)
 
-    console.print(table)
+    print(tabulate(rows, headers=headers, tablefmt='github'))
 
 
 def output_rows_as_csv(row_dicts: list[dict], columns: list[str], output_path: Path):
