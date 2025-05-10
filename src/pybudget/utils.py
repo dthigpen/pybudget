@@ -54,7 +54,7 @@ def safe_file_update_context(
 
     # Create a temp file in the same directory
     with tempfile.NamedTemporaryFile(
-        mode='w+b', dir=parent_dir, suffix=suffix, delete=False
+        mode='w+b', dir=parent_dir, suffix=suffix, delete=(dry_run or not keep_backup)
     ) as tmp:
         temp_path = Path(tmp.name)
 
@@ -78,5 +78,6 @@ def safe_file_update_context(
         temp_path.replace(original_path)
 
     except Exception as e:
-        temp_path.unlink(missing_ok=True)
         raise RuntimeError(f'Failed to update {original_path}: {e}') from e
+    finally:
+        temp_path.unlink(missing_ok=True)

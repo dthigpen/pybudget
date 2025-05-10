@@ -112,7 +112,7 @@ def output_transactions_to_table(
         'suggested_category',
     ]
     columns = [c for c in all_columns_ordered if c not in exclude_columns]
-    alias_mapping = {'id': 'ID', 'suggesed_category': 'Suggested'}
+    alias_mapping = {'id': 'ID', 'suggested_category': 'Suggested'}
     headers = list(map(lambda c: alias_mapping.get(c, c.title()), columns))
     rows = []
     for txn in transactions:
