@@ -1,9 +1,11 @@
 from datetime import datetime
+import json
 import shutil
 import tempfile
 import os
 from pathlib import Path
 from contextlib import contextmanager
+import argparse
 
 
 def str_to_datetime(value: str) -> datetime:
@@ -14,25 +16,24 @@ def datetime_to_str(value: datetime) -> str:
     return value.strftime('%Y-%m-%d')
 
 
-def extract_filters(args):
-    filters = {}
+def existing_file(p):
+    p = Path(p)
+    if p.is_file():
+        return p
+    raise argparse.ArgumentTypeError(f'{p} must be an existing file path')
 
-    # Convert date strings to datetime objects if provided
-    if args.start_date:
-        filters['start_date'] = datetime.strptime(args.start_date, '%Y-%m-%d')
-    if args.end_date:
-        filters['end_date'] = datetime.strptime(args.end_date, '%Y-%m-%d')
 
-    # Add any field-based filters
-    field_filters = {}
-    for field in ['description', 'account', 'category']:
-        val = getattr(args, field, None)
-        if val:
-            field_filters[field] = val
-    if field_filters:
-        filters['fields'] = field_filters
+def existing_json_file(p):
+    p = existing_file(p)
+    return json.loads(p.read_text())
 
-    return filters
+
+def load_config(p):
+    default_config = {
+        'importers': [],
+    }
+    actual = existing_json_file(p)
+    return {**default_config, **actual}
 
 
 @contextmanager
