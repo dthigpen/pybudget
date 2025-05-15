@@ -41,15 +41,13 @@ def list_transactions(
     if suggest_categories:
         all_txns = list(Transaction.from_tinydb_dict(t) for t in transactions.all())
 
-    row_dicts = []
-    txn_results = []
+    filters = filters or []
     if only_uncategorized:
         filters.append('category=')
     filter_query = construct_filters_query(filters)
     if ids:
-        txn_results = [
-            Transaction.from_tinydb_dict(t) for t in transactions.get(doc_ids=ids)
-        ]
+        for t in transactions.get(doc_ids=ids):
+            yield Transaction.from_tinydb_dict(t)
     else:
         for t in (
             transactions.search(filter_query) if filter_query else transactions.all()
@@ -62,11 +60,7 @@ def list_transactions(
                     t.suggested_category = results[0][0]
                 else:
                     t.suggested_category = None
-            txn_results.append(t)
-
-    # TODO sort in caller or near output
-    txn_results.sort(key=lambda t: t.date)
-    return txn_results
+            yield t
 
 
 def find_importer(p: Path, importers: list) -> dict:
@@ -188,7 +182,8 @@ def edit_transactions(
     db_path: Path,
     config_path: Path,
     from_path: Path | Literal['-'],
-    transaction_id: str = None,
+    ids: list[int] = None,
+    filters: list[str] = None,
     new_date: str = None,
     new_description: str = None,
     new_amount: float = None,
@@ -202,6 +197,7 @@ def edit_transactions(
     db = TinyDB(db_path)
     transactions = db.table('transactions')
 
+    filters = filters or []
     column_names = {c: c for c in DATA_FILE_COLUMNS}
     updated = []
     update_delete_pairs = []
@@ -220,22 +216,31 @@ def edit_transactions(
                 k: v for k, v in csv_dict.items() if k not in keys_to_delete
             }
             update_delete_pairs.append((updates_dict, keys_to_delete))
-    elif transaction_id is not None:
-        updates_dict = {
-            'id': transaction_id,
-            'date': new_date,
-            'description': new_description,
-            'amount': new_amount,
-            'account': new_account,
-            'category': new_category,
-        }
-        # filter out None since None is used when caller does not pass a value
-        updates_dict = {k: v for k, v in updates_dict.items() if v is not None}
-        keys_to_delete = {k for k, v in updates_dict.items() if v in ('',)}
-        updates_dict = {
-            k: v for k, v in updates_dict.items() if k not in keys_to_delete
-        }
-        update_delete_pairs.append((updates_dict, keys_to_delete))
+    elif ids or filters:
+        results = list(
+            list_transactions(
+                db_path,
+                config_path,
+                filters=filters,
+                ids=ids,
+            )
+        )
+        for res in results:
+            updates_dict = {
+                'id': res.id,
+                'date': new_date,
+                'description': new_description,
+                'amount': new_amount,
+                'account': new_account,
+                'category': new_category,
+            }
+            # filter out None since None is used when caller does not pass a value
+            updates_dict = {k: v for k, v in updates_dict.items() if v is not None}
+            keys_to_delete = {k for k, v in updates_dict.items() if v in ('',)}
+            updates_dict = {
+                k: v for k, v in updates_dict.items() if k not in keys_to_delete
+            }
+            update_delete_pairs.append((updates_dict, keys_to_delete))
     else:
         raise ValueError('No transactions specified to edit')
     for updates_dict, keys_to_delete in update_delete_pairs:

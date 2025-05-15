@@ -66,15 +66,18 @@ def __determine_output_format(
 
 
 def handle_list_transactions(args):
-    txns = list_transactions(
-        args.db,
-        args.config,
-        args.filter,
-        only_uncategorized=args.uncategorized,
-        suggest_categories=args.suggest_categories,
-        ids=args.ids,
+    txns = list(
+        list_transactions(
+            args.db,
+            args.config,
+            args.filters,
+            only_uncategorized=args.uncategorized,
+            suggest_categories=args.suggest_categories,
+            ids=args.ids,
+        )
     )
-
+    # TODO figure out why there is no date for some
+    txns.sort(key=lambda t: t.date if t.date else str_to_datetime('0001-01-01'))
     output_format = args.output_format
     output_path = args.output_file
     output_format = __determine_output_format(output_format, output_path)
@@ -85,17 +88,6 @@ def handle_list_transactions(args):
         output_transactions_to_csv(txns, output_path, exclude_columns=column_excludes)
     else:
         raise ValueError(f'Unrecognized output format: {output_format.value}')
-
-
-def output_rows_to_table(row_dicts: list[dict], columns: list[str], title: str = None):
-    alias_mapping = {'id': 'ID', 'suggesed_category': 'Suggested'}
-    headers = list(map(lambda c: alias_mapping.get(c, c.title()), columns))
-    rows = []
-    for row_dict in row_dicts:
-        values = __dict_to_ordered_values(row_dict, columns)
-        rows.append(values)
-
-    print(tabulate(rows, headers=headers, tablefmt='github'))
 
 
 def output_transactions_to_table(
@@ -152,16 +144,17 @@ def output_transactions_to_csv(
 
 
 def handle_edit_transaction(args):
-    if args.transaction_id is None and args.from_path is None:
+    if not args.filters and not args.ids and args.from_path is None:
         raise ValueError(
-            'A transaction_id or --from argument must be applied. See --help for details.'
+            'A transaction_id, --filter argument, or --from argument must be applied. See --help for details.'
         )
     with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
         updated_txns = edit_transactions(
             db_path,
             args.config,
             args.from_path,
-            args.transaction_id,
+            ids=args.ids,
+            filters=args.filters,
             new_date=args.date,
             new_amount=args.amount,
             new_account=args.account,
@@ -235,6 +228,21 @@ def parse_args(system_args):
             help='Path to the config file',
         )
 
+    def add_filtering(parser):
+        parser.add_argument(
+            '--filter',
+            dest='filters',
+            action='append',
+            help='Add a filter expression like "field~value", "amount>100", etc. Can be used multiple times.',
+        )
+        parser.add_argument(
+            '--id',
+            dest='ids',
+            type=int,
+            nargs='*',
+            help='The IDs of specific transactions to use in the query',
+        )
+
     parser = argparse.ArgumentParser(description='pybudget CLI')
     parser.set_defaults(func=lambda args: parser.print_help())
     add_common_arguments(parser)
@@ -277,8 +285,9 @@ def parse_args(system_args):
     add_common_arguments(list_transactions_parser)
     list_transactions_parser.add_argument(
         '--filter',
+        dest='filters',
         action='append',
-        help='Adda filter expression like "field~value", "amount>100", etc. Can be used multiple times.',
+        help='Add a filter expression like "field~value", "amount>100", etc. Can be used multiple times.',
     )
     list_transactions_parser.add_argument(
         '--uncategorized',
@@ -322,6 +331,7 @@ def parse_args(system_args):
         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
     )
     add_common_arguments(delete_txns_parser)
+    add_filtering(delete_txns_parser)
     delete_txns_parser.set_defaults(func=handle_delete_transaction)
 
     # Edit command
@@ -331,11 +341,9 @@ def parse_args(system_args):
         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
     )
     add_common_arguments(edit_txns_parser)
-    edit_source = edit_txns_parser.add_mutually_exclusive_group(required=True)
-    edit_source.add_argument(
-        '--id', dest='transaction_id', help='ID of the transaction to edit'
-    )
-    edit_source.add_argument(
+    # edit_source = edit_txns_parser.add_mutually_exclusive_group(required=True)
+    add_filtering(edit_txns_parser)
+    edit_txns_parser.add_argument(
         '--from', dest='from_path', help='Apply edits from either a file or from stdin'
     )
     edit_txns_parser.add_argument(
