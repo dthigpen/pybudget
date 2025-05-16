@@ -15,6 +15,7 @@ from pybudget.transactions import (
     list_transactions,
     import_transactions,
     edit_transactions,
+    delete_transactions,
 )
 import difflib
 from tabulate import tabulate
@@ -70,7 +71,7 @@ def handle_list_transactions(args):
         list_transactions(
             args.db,
             args.config,
-            args.filters,
+            filters=args.filters,
             only_uncategorized=args.uncategorized,
             suggest_categories=args.suggest_categories,
             ids=args.ids,
@@ -146,7 +147,7 @@ def output_transactions_to_csv(
 def handle_edit_transaction(args):
     if not args.filters and not args.ids and args.from_path is None:
         raise ValueError(
-            'A transaction_id, --filter argument, or --from argument must be applied. See --help for details.'
+            'An --id argument, --filter argument, or --from argument must be applied. See --help for details.'
         )
     with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
         updated_txns = edit_transactions(
@@ -209,8 +210,29 @@ def handle_init(args):
 
 
 def handle_delete_transaction(args):
+    if not args.filters and not args.ids:
+        raise ValueError(
+            'An --id argument, --filter argument, or --from argument must be applied. See --help for details.'
+        )
     with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
-        delete_transactions()
+        txns_to_delete = []
+        if args.ids:
+            txns_to_delete.extend(list_transactions(db_path, args.config, ids=args.ids))
+        if args.filters:
+            txns_to_delete.extend(
+                list_transactions(
+                    db_path,
+                    args.config,
+                    filters=args.filters,
+                )
+            )
+        ids = list(map(lambda t: t.id, txns_to_delete))
+        if not ids:
+            raise ValueError('No transactions matching query')
+        delete_transactions(db_path, args.config, ids=ids)
+        output_transactions_to_table(
+            txns_to_delete, exclude_columns=['suggested_category']
+        )
 
 
 def parse_args(system_args):
@@ -283,12 +305,7 @@ def parse_args(system_args):
         'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
     )
     add_common_arguments(list_transactions_parser)
-    list_transactions_parser.add_argument(
-        '--filter',
-        dest='filters',
-        action='append',
-        help='Add a filter expression like "field~value", "amount>100", etc. Can be used multiple times.',
-    )
+    add_filtering(list_transactions_parser)
     list_transactions_parser.add_argument(
         '--uncategorized',
         action='store_true',
@@ -314,24 +331,21 @@ def parse_args(system_args):
         type=Path,
         help='The file to output to instead of stdout. File will be in CSV format.',
     )
-    list_transactions_parser.add_argument(
-        '--id',
-        dest='ids',
-        type=int,
-        nargs='*',
-        help='The IDs of transactions. Useful if you just want to pull up details for specific transactions by ID.',
-    )
-
     list_transactions_parser.set_defaults(func=handle_list_transactions)
 
     # Delete command
     delete_parser = subparsers.add_parser('delete', help='Delete a transaction')
     delete_sub = delete_parser.add_subparsers(dest='delete_target', required=True)
     delete_txns_parser = delete_sub.add_parser(
-        'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='list transactions'
+        'transactions', aliases=['t', 'ts', 'txn', 'txns'], help='delete transactions'
     )
     add_common_arguments(delete_txns_parser)
     add_filtering(delete_txns_parser)
+    delete_txns_parser.add_argument(
+        '--dry-run',
+        action='store_true',
+        help='Run through the operation without actually persisting any changes',
+    )
     delete_txns_parser.set_defaults(func=handle_delete_transaction)
 
     # Edit command

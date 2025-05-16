@@ -44,11 +44,12 @@ def list_transactions(
     filters = filters or []
     if only_uncategorized:
         filters.append('category=')
-    filter_query = construct_filters_query(filters)
     if ids:
         for t in transactions.get(doc_ids=ids):
             yield Transaction.from_tinydb_dict(t)
+
     else:
+        filter_query = construct_filters_query(filters)
         for t in (
             transactions.search(filter_query) if filter_query else transactions.all()
         ):
@@ -166,6 +167,13 @@ def import_transactions(
     )
 
 
+def delete_transactions(db_path, config, ids: list[id]):
+    db = TinyDB(db_path)
+    transactions = db.table('transactions')
+    ids = set(ids)
+    transactions.remove(doc_ids=ids)
+
+
 def validate_transaction(txn: Transaction):
     if (
         txn.date is None
@@ -198,6 +206,7 @@ def edit_transactions(
     transactions = db.table('transactions')
 
     filters = filters or []
+    ids = ids or []
     column_names = {c: c for c in DATA_FILE_COLUMNS}
     updated = []
     update_delete_pairs = []
