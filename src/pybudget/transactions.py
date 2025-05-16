@@ -17,10 +17,6 @@ from pybudget.filtering import construct_filters_query
 from pybudget import suggestions
 import difflib
 
-from rich import box
-from rich.console import Console
-from rich.table import Table
-
 from tinydb import TinyDB, Query
 
 DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
