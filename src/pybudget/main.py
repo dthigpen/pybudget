@@ -22,8 +22,9 @@ from tabulate import tabulate
 from tinydb import TinyDB, Query
 
 
-DATA_FILE_NAME = 'pybudget_db.json'
+TXNS_FILE_NAME = 'pybudget_txns.csv'
 CONFIG_FILE_NAME = 'pybudget_config.json'
+TXNS_FILE_FIELDS = ['id', 'date', 'description', 'amount', 'account', 'category', 'notes']
 TRANSACTION_FIELDS = ['date', 'description', 'amount', 'account', 'category']
 DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
 
@@ -149,6 +150,7 @@ def handle_edit_transaction(args):
         raise ValueError(
             'An --id argument, --filter argument, or --from argument must be applied. See --help for details.'
         )
+        
     with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
         updated_txns = edit_transactions(
             db_path,
@@ -167,10 +169,11 @@ def handle_edit_transaction(args):
 
 
 def handle_import_transactions(args):
-    with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
+    txns_path = args.dir / TXNS_FILE_NAME
+    with safe_file_update_context(txns_path, dry_run=args.dry_run) as tmp_txns_path:
         new_txns = list(
             import_transactions(
-                db_path,
+                tmp_txns_path,
                 args.config,
                 args.csv_paths,
                 importer_name=args.importer,
@@ -181,6 +184,16 @@ def handle_import_transactions(args):
 
 
 def handle_init(args):
+    budget_dir = args.budget_data_dir
+
+    # create the budget data dir
+    if budget_dir.exists():
+        print(f'Budget directory already exists at {budget_dir}')
+    elif budget_dir != Path.cwd():
+        budget_dir.mkdir(parents=True)
+        print(f'Created budget directory at {budget_dir}')
+
+    # create the config file pybudget.json
     starter_config = {
         'importers': [
             {
@@ -193,20 +206,18 @@ def handle_init(args):
             }
         ],
     }
-    config_path = Path.cwd() / CONFIG_FILE_NAME
+    config_path = budget_dir / CONFIG_FILE_NAME
     if config_path.is_file():
-        print('Config file already exists at {config_path}')
+        print(f'Config file already exists at {config_path}')
     else:
         config_path.write_text(json.dumps(starter_config, indent=4))
         print(f'Created starter config at {config_path}')
-    db_path = Path.cwd() / DATA_FILE_NAME
-    if db_path.is_file():
-        print('Database file already exists at {db_path}')
-    else:
-        db = TinyDB(db_path)
-        transactions = db.table('transactions')
-        categories = db.table('categories')
-        print(f'Created database file at {db_path}')
+
+
+    txns_file = budget_dir / TXNS_FILE_NAME
+    if not txns_file.exists():
+        txns_csv = csv_tools.TransactionsCSV(txns_file)
+        txns_csv.initialize()
 
 
 def handle_delete_transaction(args):
@@ -238,10 +249,10 @@ def handle_delete_transaction(args):
 def parse_args(system_args):
     def add_common_arguments(parser):
         parser.add_argument(
-            '--db',
+            '--dir',
             type=Path,
-            default=Path.cwd() / DATA_FILE_NAME,
-            help='Path to the pybudget database file',
+            default=Path.cwd(),
+            help='Path to the directory to look for transactions and budget files',
         )
         parser.add_argument(
             '--config',
@@ -274,6 +285,7 @@ def parse_args(system_args):
     init_parser = subparsers.add_parser(
         'init', help='Initialize a starter pybudget.json'
     )
+    init_parser.add_argument('budget_data_dir', type=Path, help='The name of a new directory to keep all of your budget data')
     init_parser.set_defaults(func=handle_init)
 
     # Import group

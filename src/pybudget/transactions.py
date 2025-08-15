@@ -90,14 +90,14 @@ def find_importer(p: Path, importers: list) -> dict:
 
 
 def import_transactions(
-    db_path: Path,
+    txns_path: Path,
     config_path: Path,
     csv_paths: list[Path],
     importer_name: str = None,
 ) -> list[Transaction]:
-    # open db
-    db = TinyDB(db_path)
-    transactions = db.table('transactions')
+
+    # init txns csv db
+    txns_csv_db = csv_tools.TransactionsCSV(txns_path)
 
     # load config
     config = load_config(config_path)
@@ -130,6 +130,7 @@ def import_transactions(
             'amount': matching_importer.get('amountColumn', 'Amount'),
             'account': matching_importer.get('accountColumn', 'Account'),
             'category': matching_importer.get('categoryColumn', None),
+            'notes': matching_importer.get('notesColumn', None),
         }
         # get default value mapping for importer
         default_values = {
@@ -138,6 +139,7 @@ def import_transactions(
             'amount': matching_importer.get('amountValue', ''),
             'account': matching_importer.get('accountValue', ''),
             'category': matching_importer.get('categoryValue', ''),
+            'notes': matching_importer.get('notesValue', ''),
         }
         transactions_in_file = []
         for txn_dict in csv_tools.read_dicts_from_csv(
@@ -153,14 +155,16 @@ def import_transactions(
 
         # insert all transactions from file
         if transactions_in_file:
-            json_txns_to_insert = [t.to_tinydb_dict() for t in transactions_in_file]
-            added_ids += transactions.insert_multiple(json_txns_to_insert)
+            next_id = txns_csv_db.get_next_id()
+            for txn in transactions_in_file:
+                if txn.id is None:
+                    txn.id = next_id
+                    next_id += 1
+                txns_csv_db.add(txn.to_csv_dict())
 
         print(f'Finished importing {p}')
 
-    return (
-        Transaction.from_tinydb_dict(t) for t in transactions.get(doc_ids=added_ids)
-    )
+    return transactions_in_file
 
 
 def delete_transactions(db_path, config, ids: list[id]):

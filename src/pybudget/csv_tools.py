@@ -5,10 +5,13 @@ import csv
 import os
 import tempfile
 import json
-from typing import Literal
+from typing import Literal, Dict, Generator, Optional
 import sys
 import io
 
+TRANSACTION_FIELDS = [
+    "id", "date", "description", "amount", "account", "category", "notes"
+]
 
 class LargeCSV:
     def __init__(
@@ -193,7 +196,7 @@ class LargeCSV:
             )
 
 
-class TransactionsCSV:
+class TransactionsCSVOld:
     def __init__(
         self,
         path: Path,
@@ -263,6 +266,91 @@ def init_large_csv(path: Path, fieldnames: list[str]):
     LargeCSV(path, reset_index=is_new)
 
 
+def omit_keys(d: dict, keys: set | list) -> dict:
+    keys = set(keys)
+    return { k: v for k, v in d.items() if k not in keys}
+
+def only_keys(d: dict, keys: set | list) -> dict:
+    keys = set(keys)
+    return { k: v for k, v in d.items() if k in keys}
+
+class TransactionsCSV:
+    def __init__(self, file_path: Path):
+        self.file_path = Path(file_path)
+
+    def initialize(self) -> None:
+        """Create the CSV file with headers if it doesn't exist."""
+        if not self.file_path.exists():
+            self.file_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.file_path.open(mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
+                writer.writeheader()
+
+    def get_all(self) -> Generator[Dict[str, str], None, None]:
+        """Yield all transactions one by one."""
+        if not self.file_path.exists():
+            return
+        with self.file_path.open(mode="r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                yield row
+
+    def get_by_id(self, transaction_id: str) -> Optional[Dict[str, str]]:
+        """Find a transaction by its ID."""
+        for row in self.get_all():
+            if row["id"] == transaction_id:
+                return row
+        return None
+
+    def add(self, transaction: Dict[str, str]) -> None:
+        transaction = only_keys(transaction, TRANSACTION_FIELDS)
+        """Add a new transaction."""
+        with self.file_path.open(mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
+            writer.writerow(transaction)
+
+    def update(self, transaction_id: str, updates: Dict[str, str]) -> bool:
+        """Update a transaction by ID. Returns True if updated."""
+        updates = only_keys(updates, TRANSACTION_FIELDS)
+        updated = False
+        rows = []
+        with self.file_path.open(mode="r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["id"] == transaction_id:
+                    row.update(updates)
+                    updated = True
+                rows.append(row)
+        if updated:
+            with self.file_path.open(mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
+                writer.writeheader()
+                writer.writerows(rows)
+        return updated
+
+    def delete(self, transaction_id: str) -> bool:
+        """Delete a transaction by ID. Returns True if deleted."""
+        deleted = False
+        rows = []
+        with self.file_path.open(mode="r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if row["id"] != transaction_id:
+                    rows.append(row)
+                else:
+                    deleted = True
+        if deleted:
+            with self.file_path.open(mode="w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
+                writer.writeheader()
+                writer.writerows(rows)
+        return deleted
+
+    def get_next_id(self) -> int:
+        """Returns the next ID based on the highest current one."""
+        existing_ids = [int(r['id']) for r in self.get_all() if r.get('id') is not None]
+        return (max(existing_ids) + 1) if existing_ids else 1
+        
 from contextlib import contextmanager
 
 

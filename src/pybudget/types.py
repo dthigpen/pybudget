@@ -12,6 +12,7 @@ class Transaction:
     amount: float = None
     account: Optional[str] = None
     category: Optional[str] = None
+    notes: Optional[str] = None
     # Below fields are not represented in TinyDB
     id: int = None
     suggested_category: str = None
