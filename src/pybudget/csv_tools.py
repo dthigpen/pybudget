@@ -10,8 +10,15 @@ import sys
 import io
 
 TRANSACTION_FIELDS = [
-    "id", "date", "description", "amount", "account", "category", "notes"
+    'id',
+    'date',
+    'description',
+    'amount',
+    'account',
+    'category',
+    'notes',
 ]
+
 
 class LargeCSV:
     def __init__(
@@ -268,11 +275,13 @@ def init_large_csv(path: Path, fieldnames: list[str]):
 
 def omit_keys(d: dict, keys: set | list) -> dict:
     keys = set(keys)
-    return { k: v for k, v in d.items() if k not in keys}
+    return {k: v for k, v in d.items() if k not in keys}
+
 
 def only_keys(d: dict, keys: set | list) -> dict:
     keys = set(keys)
-    return { k: v for k, v in d.items() if k in keys}
+    return {k: v for k, v in d.items() if k in keys}
+
 
 class TransactionsCSV:
     def __init__(self, file_path: Path):
@@ -282,7 +291,7 @@ class TransactionsCSV:
         """Create the CSV file with headers if it doesn't exist."""
         if not self.file_path.exists():
             self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.file_path.open(mode="w", newline="", encoding="utf-8") as f:
+            with self.file_path.open(mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
                 writer.writeheader()
 
@@ -290,39 +299,48 @@ class TransactionsCSV:
         """Yield all transactions one by one."""
         if not self.file_path.exists():
             return
-        with self.file_path.open(mode="r", newline="", encoding="utf-8") as f:
+        with self.file_path.open(mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
                 yield row
 
     def get_by_id(self, transaction_id: str) -> Optional[Dict[str, str]]:
-        """Find a transaction by its ID."""
+        res = self.get_all_by_ids([transaction_id])
+        return next(res, None)
+
+    def get_all_by_ids(
+        self, transaction_ids: list[str]
+    ) -> Generator[Dict[str, str], None, None]:
+        """Finds transactions by ID."""
+        transaction_ids = set(str(i) for i in transaction_ids)
         for row in self.get_all():
-            if row["id"] == transaction_id:
-                return row
-        return None
+            if row['id'] in transaction_ids:
+                yield row
 
     def add(self, transaction: Dict[str, str]) -> None:
-        transaction = only_keys(transaction, TRANSACTION_FIELDS)
         """Add a new transaction."""
-        with self.file_path.open(mode="a", newline="", encoding="utf-8") as f:
+        self.initialize()
+        transaction = only_keys(transaction, TRANSACTION_FIELDS)
+        with self.file_path.open(mode='a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
             writer.writerow(transaction)
 
     def update(self, transaction_id: str, updates: Dict[str, str]) -> bool:
         """Update a transaction by ID. Returns True if updated."""
+        self.initialize()
+        transaction_id = str(transaction_id)
         updates = only_keys(updates, TRANSACTION_FIELDS)
         updated = False
         rows = []
-        with self.file_path.open(mode="r", newline="", encoding="utf-8") as f:
+        with self.file_path.open(mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if row["id"] == transaction_id:
+                if row['id'] == transaction_id:
                     row.update(updates)
                     updated = True
                 rows.append(row)
         if updated:
-            with self.file_path.open(mode="w", newline="", encoding="utf-8") as f:
+            with self.file_path.open(mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
                 writer.writeheader()
                 writer.writerows(rows)
@@ -330,17 +348,24 @@ class TransactionsCSV:
 
     def delete(self, transaction_id: str) -> bool:
         """Delete a transaction by ID. Returns True if deleted."""
+        self.initialize()
+        return self.delete_many([transaction_id])
+
+    def delete_many(self, transaction_ids: set[str]) -> bool:
+        self.initialize()
+        transaction_ids = set(str(i) for i in list(transaction_ids))
         deleted = False
         rows = []
-        with self.file_path.open(mode="r", newline="", encoding="utf-8") as f:
+        with self.file_path.open(mode='r', newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             for row in reader:
-                if row["id"] != transaction_id:
+                print(f'row {row}')
+                if row['id'] not in transaction_ids:
                     rows.append(row)
                 else:
                     deleted = True
         if deleted:
-            with self.file_path.open(mode="w", newline="", encoding="utf-8") as f:
+            with self.file_path.open(mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.DictWriter(f, fieldnames=TRANSACTION_FIELDS)
                 writer.writeheader()
                 writer.writerows(rows)
@@ -350,7 +375,8 @@ class TransactionsCSV:
         """Returns the next ID based on the highest current one."""
         existing_ids = [int(r['id']) for r in self.get_all() if r.get('id') is not None]
         return (max(existing_ids) + 1) if existing_ids else 1
-        
+
+
 from contextlib import contextmanager
 
 

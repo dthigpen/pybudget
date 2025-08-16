@@ -1,5 +1,6 @@
 import argparse
 import csv
+import copy
 import sys
 import json
 import re
@@ -24,7 +25,15 @@ from tinydb import TinyDB, Query
 
 TXNS_FILE_NAME = 'pybudget_txns.csv'
 CONFIG_FILE_NAME = 'pybudget_config.json'
-TXNS_FILE_FIELDS = ['id', 'date', 'description', 'amount', 'account', 'category', 'notes']
+TXNS_FILE_FIELDS = [
+    'id',
+    'date',
+    'description',
+    'amount',
+    'account',
+    'category',
+    'notes',
+]
 TRANSACTION_FIELDS = ['date', 'description', 'amount', 'account', 'category']
 DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
 
@@ -68,12 +77,13 @@ def __determine_output_format(
 
 
 def handle_list_transactions(args):
+    # TODO remove when adding category suggestions back
+    args.suggest_categories = False
     txns = list(
         list_transactions(
-            args.db,
-            args.config,
+            args.dir / TXNS_FILE_NAME,
+            args.dir / CONFIG_FILE_NAME,
             filters=args.filters,
-            only_uncategorized=args.uncategorized,
             suggest_categories=args.suggest_categories,
             ids=args.ids,
         )
@@ -150,11 +160,13 @@ def handle_edit_transaction(args):
         raise ValueError(
             'An --id argument, --filter argument, or --from argument must be applied. See --help for details.'
         )
-        
-    with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
+
+    with safe_file_update_context(
+        args.dir / TXNS_FILE_NAME, dry_run=args.dry_run
+    ) as tmp_txns_path:
         updated_txns = edit_transactions(
-            db_path,
-            args.config,
+            tmp_txns_path,
+           args.dir / CONFIG_FILE_NAME,
             args.from_path,
             ids=args.ids,
             filters=args.filters,
@@ -174,7 +186,7 @@ def handle_import_transactions(args):
         new_txns = list(
             import_transactions(
                 tmp_txns_path,
-                args.config,
+                args.dir / CONFIG_FILE_NAME,
                 args.csv_paths,
                 importer_name=args.importer,
             )
@@ -213,7 +225,6 @@ def handle_init(args):
         config_path.write_text(json.dumps(starter_config, indent=4))
         print(f'Created starter config at {config_path}')
 
-
     txns_file = budget_dir / TXNS_FILE_NAME
     if not txns_file.exists():
         txns_csv = csv_tools.TransactionsCSV(txns_file)
@@ -225,25 +236,99 @@ def handle_delete_transaction(args):
         raise ValueError(
             'An --id argument, --filter argument, or --from argument must be applied. See --help for details.'
         )
-    with safe_file_update_context(args.db, dry_run=args.dry_run) as db_path:
+    with safe_file_update_context(
+        args.dir / TXNS_FILE_NAME, dry_run=args.dry_run
+    ) as tmp_txns_path:
         txns_to_delete = []
         if args.ids:
-            txns_to_delete.extend(list_transactions(db_path, args.config, ids=args.ids))
+            txns_to_delete.extend(
+                list_transactions(tmp_txns_path, args.dir / CONFIG_FILE_NAME, ids=args.ids)
+            )
         if args.filters:
             txns_to_delete.extend(
                 list_transactions(
-                    db_path,
-                    args.config,
+                    tmp_txns_path,
+                    args.dir / CONFIG_FILE_NAME,
                     filters=args.filters,
                 )
             )
         ids = list(map(lambda t: t.id, txns_to_delete))
         if not ids:
             raise ValueError('No transactions matching query')
-        delete_transactions(db_path, args.config, ids=ids)
+        delete_transactions(tmp_txns_path, args.dir / CONFIG_FILE_NAME, ids=ids)
         output_transactions_to_table(
             txns_to_delete, exclude_columns=['suggested_category']
         )
+
+
+def handle_new_budget(args):
+    # TODO handle interactive
+    empty_budget_template = {
+        'month': 'YYYY-MM',  # TODO set to current year-month
+        'income': [],
+        'expenses': [],
+        'funds': [],
+    }
+    sample_budget = copy.deepcopy(empty_budget_template)
+    sample_budget['income'] = [
+        {
+            'name': 'Income',
+            'budgeted': 3.50,
+            'notes': 'Update to your own estimated monthly income',
+        }
+    ]
+    sample_budget['expenses'] = [
+        {'name': 'Rent', 'budgeted': 1250},
+        {'name': 'Groceries', 'budgeted': 150.0},
+        {'name': 'Internet', 'budgeted': 50.0},
+    ]
+    sample_budget['funds'] = [
+        {'name': 'Travel', 'balance': 0, 'goal': 5000},
+        {'name': 'Medical Emergency', 'balance': 0, 'goal': 10000},
+    ]
+
+    default_report_example = {
+        'income': [],
+        'expenses': [],
+        'funds': [],
+    }
+    source_budget = None
+    if args.from_file:
+        source_budget = json.loads(args.from_file.read_text())
+        if 'report' not in source_budget:
+            print(
+                f'Budget being copied from does not have a report element, meaning balances may not be up to date! Run a report to remove this warning. Budget: {args.from_file}'
+            )
+    elif args.sample:
+        # TODO make from and sample mutually exclusive
+        source_budget = copy.deepcopy(sample_budget)
+    else:
+        source_budget = empty_budget_template
+
+    new_budget = empty_budget_template
+    new_budget['month'] = args.month
+
+    # copy over income/expenses/funds
+    for cat_type in ('income', 'expenses', 'funds'):
+        new_budget[cat_type] = copy.deepcopy(source_budget[cat_type])
+
+    # update balances to be those found in the source budget report
+    report = source_budget.get('report', {})
+    if report:
+        new_budget_funds = new_budget['funds']
+        for report_fund in report.get('funds', []):
+            new_balance = report_fund['balance']
+            new_fund = next(
+                filter(lambda f: f['name'] == report_fund['name'], new_budget_funds),
+                None,
+            )
+            if new_fund:
+                new_fund['balance'] = new_balance
+    else:
+        print(f'No report to use updated balances from')
+
+    new_budget_path = args.dir / (f'{args.month}-budget.json')
+    new_budget_path.write_text(json.dumps(new_budget, indent=4))
 
 
 def parse_args(system_args):
@@ -283,11 +368,56 @@ def parse_args(system_args):
 
     # Init parser
     init_parser = subparsers.add_parser(
-        'init', help='Initialize a starter pybudget.json'
+        'init', help='Initialize a workspace for your budgets'
     )
-    init_parser.add_argument('budget_data_dir', type=Path, help='The name of a new directory to keep all of your budget data')
+    init_parser.add_argument(
+        'budget_data_dir',
+        type=Path,
+        help='The name of a new directory to keep all of your budget data',
+    )
     init_parser.set_defaults(func=handle_init)
 
+    # New parser
+    new_parser = subparsers.add_parser('new', help='New resource')
+    new_sub = new_parser.add_subparsers(dest='new_target', required=True)
+
+    new_budget_parser = new_sub.add_parser(
+        'budget', aliases=['b', 'bud', 'bdgt', 'bgt'], help='New monthly budget file'
+    )
+
+    new_budget_parser.add_argument(
+        'month',
+        type=str,
+        help='Month of this budget. Typically the upcoming month. E.g. 2025-05',
+    )
+    new_budget_parser.add_argument(
+        '--from',
+        dest='from_file',
+        type=Path,
+        help='Budget file to copy from. Typically the current/previous month',
+    )
+    new_budget_parser.add_argument(
+        '--sample',
+        action='store_true',
+        help='Populate with example income, expenses, and funds',
+    )
+
+    # Report parser
+    report_parser = subparsers.add_parser('report', help='Generate a report for an existing budget')
+    
+    # report_sub = report_parser.add_subparsers(dest='report_target', required=True)
+
+    # report_budget_parser = report_sub.add_parser(
+    #     'budget', aliases=['b', 'bud', 'bdgt', 'bgt'], help='report monthly budget file'
+    # )
+# 
+    report_parser.add_argument(
+        'month',
+        type=str,
+        help='Month of the budget to generate a report on. E.g. 2025-05',
+    )
+#     report_budget_parser.set_defaults(func=handle_report_budget)
+    report_parser.set_defaults(func=lambda args: print(args))
     # Import group
     import_parser = subparsers.add_parser('import', help='Import data')
     import_sub = import_parser.add_subparsers(dest='import_target', required=True)
@@ -323,12 +453,12 @@ def parse_args(system_args):
         action='store_true',
         help='A filter to only show uncategorized transactions',
     )
-    list_transactions_parser.add_argument(
-        '-s',
-        '--suggest-categories',
-        action='store_true',
-        help='Add a column for suggested categories for the uncategorized',
-    )
+    # list_transactions_parser.add_argument(
+    #     '-s',
+    #     '--suggest-categories',
+    #     action='store_true',
+    #     help='Add a column for suggested categories for the uncategorized',
+    # )
     list_transactions_parser.add_argument(
         '-f',
         '--output-format',

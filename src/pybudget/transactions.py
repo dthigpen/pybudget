@@ -13,51 +13,72 @@ from pybudget.utils import (
     load_config,
 )
 from pybudget.types import Transaction
-from pybudget.filtering import construct_filters_query
+from pybudget.filtering import apply_filters
 from pybudget import suggestions
 import difflib
 
 from tinydb import TinyDB, Query
 
 DATA_FILE_COLUMNS = ['id', 'date', 'description', 'amount', 'account', 'category']
+TXNS_FILE_FIELDS = [
+    'id',
+    'date',
+    'description',
+    'amount',
+    'account',
+    'category',
+    'notes',
+]
 
 
 def list_transactions(
-    db_path: Path,
+    txns_path: Path,
     config_path: Path,
     filters: list[str] = None,
     only_uncategorized=False,
     suggest_categories: bool = False,
     ids: list[int] = None,
 ) -> list[Transaction]:
-    db = TinyDB(db_path)
-    transactions = db.table('transactions')
+    txns_csv_db = csv_tools.TransactionsCSV(txns_path)
     ids = ids or []
     all_txns = []
     if suggest_categories:
-        all_txns = list(Transaction.from_tinydb_dict(t) for t in transactions.all())
+        raise NotImplementedError()
+        # all_txns = list(Transaction.from_tinydb_dict(t) for t in transactions.all())
 
     filters = filters or []
     if only_uncategorized:
         filters.append('category=')
     if ids:
-        for t in transactions.get(doc_ids=ids):
-            yield Transaction.from_tinydb_dict(t)
+        ids_left = ids
+        for t in txns_csv_db.get_all():
+            found_id = int(t['id'])
+            if found_id in ids_left:
+                ids_left.remove(found_id)
+                yield Transaction.from_csv_dict(t)
+            if not ids_left:
+                break
+        if ids_left:
+            raise ValueError(f'Transactions with ids {ids_left} do not exist')
 
     else:
-        filter_query = construct_filters_query(filters)
-        for t in (
-            transactions.search(filter_query) if filter_query else transactions.all()
-        ):
-            doc_id = t.doc_id
-            t = Transaction.from_tinydb_dict(t)
-            if suggest_categories and (not t.category or t.category == 'uncategorized'):
-                results = suggestions.suggest_categories(t.description, all_txns)
-                if results:
-                    t.suggested_category = results[0][0]
-                else:
-                    t.suggested_category = None
-            yield t
+        all_txns = txns_csv_db.get_all()
+        filtered_txns = apply_filters(all_txns, filters)
+        for t in filtered_txns:
+            yield Transaction.from_csv_dict(t)
+        # filter_query = construct_filters_query(filters)
+        # for t in (
+        #     transactions.search(filter_query) if filter_query else transactions.all()
+        # ):
+        #     doc_id = t.doc_id
+        #     t = Transaction.from_tinydb_dict(t)
+        #     if suggest_categories and (not t.category or t.category == 'uncategorized'):
+        #         results = suggestions.suggest_categories(t.description, all_txns)
+        #         if results:
+        #             t.suggested_category = results[0][0]
+        #         else:
+        #             t.suggested_category = None
+        #     yield t
 
 
 def find_importer(p: Path, importers: list) -> dict:
@@ -95,7 +116,6 @@ def import_transactions(
     csv_paths: list[Path],
     importer_name: str = None,
 ) -> list[Transaction]:
-
     # init txns csv db
     txns_csv_db = csv_tools.TransactionsCSV(txns_path)
 
@@ -160,6 +180,7 @@ def import_transactions(
                 if txn.id is None:
                     txn.id = next_id
                     next_id += 1
+                print('importing', txn.to_csv_dict())
                 txns_csv_db.add(txn.to_csv_dict())
 
         print(f'Finished importing {p}')
@@ -167,11 +188,11 @@ def import_transactions(
     return transactions_in_file
 
 
-def delete_transactions(db_path, config, ids: list[id]):
-    db = TinyDB(db_path)
-    transactions = db.table('transactions')
+def delete_transactions(txns_path: Path, config, ids: list[id]):
     ids = set(ids)
-    transactions.remove(doc_ids=ids)
+    txns_csv_db = csv_tools.TransactionsCSV(txns_path)
+    for txn_id in ids:
+        txns_csv_db.delete(txn_id)
 
 
 def validate_transaction(txn: Transaction):
@@ -187,7 +208,7 @@ def validate_transaction(txn: Transaction):
 
 
 def edit_transactions(
-    db_path: Path,
+    txns_path: Path,
     config_path: Path,
     from_path: Path | Literal['-'],
     ids: list[int] = None,
@@ -202,12 +223,11 @@ def edit_transactions(
     Note: to empty out a field, pass the empty string '' for that value
     """
     # open db
-    db = TinyDB(db_path)
-    transactions = db.table('transactions')
+    txns_csv_db = csv_tools.TransactionsCSV(txns_path)
 
     filters = filters or []
     ids = ids or []
-    column_names = {c: c for c in DATA_FILE_COLUMNS}
+    column_names = {c: c for c in TXNS_FILE_FIELDS}
     updated = []
     update_delete_pairs = []
     updated_ids = []
@@ -228,7 +248,7 @@ def edit_transactions(
     elif ids or filters:
         results = list(
             list_transactions(
-                db_path,
+                txns_path,
                 config_path,
                 filters=filters,
                 ids=ids,
@@ -252,6 +272,7 @@ def edit_transactions(
             update_delete_pairs.append((updates_dict, keys_to_delete))
     else:
         raise ValueError('No transactions specified to edit')
+
     for updates_dict, keys_to_delete in update_delete_pairs:
         txn_id_to_update = updates_dict.get('id', None)
         if txn_id_to_update is None:
@@ -273,12 +294,16 @@ def edit_transactions(
 
             return transform
 
-        transactions.update(
-            update_fields(updates=updates_dict, deletes=keys_to_delete),
-            doc_ids=[txn_id_to_update],
-        )
+        # reusing fn from tinydb usage to update the dict
+        orig_txn = txns_csv_db.get_by_id(txn_id_to_update)
+        update_fields(updates=updates_dict, deletes=keys_to_delete)(orig_txn)
+        txns_csv_db.update(txn_id_to_update, orig_txn)
+        # transactions.update(
+        #     update_fields(updates=updates_dict, deletes=keys_to_delete),
+        #     doc_ids=[txn_id_to_update],
+        # )
         updated_ids.append(txn_id_to_update)
 
     return (
-        Transaction.from_tinydb_dict(t) for t in transactions.get(doc_ids=updated_ids)
+        Transaction.from_csv_dict(t) for t in txns_csv_db.get_all_by_ids(updated_ids)
     )

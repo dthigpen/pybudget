@@ -4,7 +4,7 @@ from pybudget.utils import str_to_datetime
 from tinydb import Query
 
 FILTER_FIELD_TYPES = {
-    'id': 'string',
+    'id': 'int',
     'date': 'date',
     'description': 'string',
     'amount': 'float',
@@ -27,6 +27,42 @@ def parse_filter_arg(filter_str: str) -> tuple[str, str, str | float | int | dat
     field_name = aliases.get(field_name, field_name)
 
     return field_name, op, op_value
+
+
+def apply_filters(rows: list[dict], filters: list[str]):
+    """Returns only rows matching all given filter expressions."""
+    parsed_filters = [parse_filter_arg(f) for f in filters]
+
+    def matches(row):
+        for field, op, value in parsed_filters:
+            rv = row.get(field)
+            if FILTER_FIELD_TYPES[field] == 'date' and isinstance(rv, str):
+                value = datetime.fromisoformat(value)
+                rv = datetime.fromisoformat(rv)
+            if FILTER_FIELD_TYPES[field] == 'int':
+                value = int(value)
+                rv = int(rv)
+            if FILTER_FIELD_TYPES[field] == 'float':
+                value = float(value)
+                rv = float(rv)
+
+            if op == '=' and rv != value:
+                return False
+            elif op == '!=' and rv == value:
+                return False
+            elif op == '>' and rv <= value:
+                return False
+            elif op == '<' and rv >= value:
+                return False
+            elif op == '>=' and rv < value:
+                return False
+            elif op == '<=' and rv > value:
+                return False
+            elif op == '~' and value.lower() not in str(rv).lower():
+                return False
+        return True
+
+    return (r for r in rows if matches(r))
 
 
 def construct_filters_query(

@@ -15,7 +15,7 @@ class Transaction:
     notes: Optional[str] = None
     # Below fields are not represented in TinyDB
     id: int = None
-    suggested_category: str = None
+    # suggested_category: str = None
 
     @classmethod
     def from_csv_dict(cls, row: dict) -> 'Transaction':
@@ -37,6 +37,8 @@ class Transaction:
                 kwargs[field_name] = str_to_datetime(value)
             elif field_type is float:
                 kwargs[field_name] = float(value)
+            elif field_type == Optional[int] or field_type is int:
+                kwargs[field_name] = int(value)
             elif field_type == Optional[str] or field_type is str:
                 kwargs[field_name] = value
             else:
