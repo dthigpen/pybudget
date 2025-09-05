@@ -17,7 +17,11 @@ dev = [
 ]
 
 [project.scripts]
-pybudget = "pybudget.main:main"
+normalize-txns = "pybudget.normalize:main"
+split-txns = "pybudget.split:main"
+merge-txns = "pybudget.merge:main"
+budget-report = "pybudget.report:main"
+
 
 [build-system]
 requires = ["hatchling"]
