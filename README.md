@@ -1,14 +1,14 @@
 # pybudget
 
-**PyBudget is a collection of small Python scripts for managing personal finances your own way. It uses standard plain-text file formats like CSV, JSON, and INI.
+**PyBudget** is a collection of small Python scripts for managing personal finances. It uses standard plain-text file formats like CSV, JSON, and INI.
 
-Instead of a monolithic "app," it follows the Unix philosophy: each script does one job and you chain them together to build a budgetting process that suites your needs.
+Instead of a monolithic app, it follows the Unix philosophy: each script does one job and you chain them together to build a budgetting process that suites your needs.
 
 ## Purpose
 
 - **Your data stays in plain CSVs** that you can open in any editor or spreadsheet.
-- **The process is transparent:** ever step is just a script that you can read, modify and re-run
-- **It's composable:** use onl the parts you want, automate with shell pipelines, or wrap in your own python scripts.
+- **The process is transparent:** every step is just a script that you can read, modify, and re-run
+- **It's composable:** use only the parts you want, automate with shell pipelines, or wrap in your own python scripts.
 
 ## Budgeting Goals
 
@@ -16,11 +16,11 @@ Instead of a monolithic "app," it follows the Unix philosophy: each script does 
 - Stay flexible: you can adjust categories and notes later without breaking the workflow.
 - Reconcile monthly cash flow: see where extra money goes or where deficits are pulled from.
 - Build and monitor funds (emergency, travel, etc.) with balances and goals.
-- Generate reports in both CSV (structured) and TXT (human-readable).
+- Generate monthly reports in both CSV and TXT.
 
 ## Non-Goals
 
-- Double ledger accounting, as seen in tools like hledger or beancount are very powerful but can also be very complicated and tedious. I find that this level of complexity can discourage long term usage.
+- Double-ledger accounting, as seen in tools like hledger or beancount are very powerful but can also be very complicated and tedious. I find that this level of complexity can discourage long term usage.
 
 ## Example Workflow 
 

@@ -13,8 +13,18 @@ import json
 import sys
 import signal
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, TextIO
 from collections import defaultdict, namedtuple
+import itertools
+import io
+
+from pybudget import util
+
+# for txt formatted report
+try:
+    from tabulate import tabulate
+except:
+    pass
 
 # pipe-safe
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -30,200 +40,574 @@ def existing_file(p: str) -> Path:
     return p
 
 
+import argparse
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Generate budget reports.')
-    parser.add_argument(
-        '--budget', type=existing_file, required=True, help='Budget JSON or CSV file.'
+    parser = argparse.ArgumentParser(
+        description='Budget reporting and initialization tool'
     )
-    parser.add_argument(
-        '--transactions',
-        type=existing_file,
-        nargs='+',
-        required=True,
-        help='Transaction CSV files.',
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    # --- report subcommand (existing) ---
+    report_parser = subparsers.add_parser('report', help='Generate budget report')
+    report_parser.add_argument(
+        '--budget', required=True, type=existing_file, help='Budget JSON or CSV file'
     )
-    parser.add_argument(
-        '-f',
+    report_parser.add_argument(
+        '--transactions', required=True, nargs='+', help='Transaction CSV file(s)'
+    )
+    report_parser.add_argument(
         '--format',
-        choices=['csv', 'txt'],
+        choices=['txt', 'csv', 'json'],
         default='txt',
-        help='Output format (default: txt).',
+        help='Output format (default: txt)',
     )
-    parser.add_argument(
-        '-o', '--output', default='-', help='Output file (default: stdout).'
+    report_parser.add_argument(
+        '--output', default='-', help='Output path (default: stdout)'
     )
+
+    # --- init subcommand (new) ---
+    init_parser = subparsers.add_parser('init', help='Initialize a budget file')
+    init_parser.add_argument(
+        '--period', required=True, help='Period to initialize (YYYY-MM)'
+    )
+    init_parser.add_argument(
+        '--from-report',
+        type=existing_file,
+        help='Optional prior report (CSV or JSON) to base new budget on',
+    )
+    init_parser.add_argument(
+        '--format',
+        choices=['json', 'csv'],
+        default='json',
+        help='Output format (default: json)',
+    )
+    init_parser.add_argument(
+        '--output', default='-', help='Output file (default: stdout)'
+    )
+
     return parser.parse_args()
 
 
-def read_budget(path: Path) -> List[BudgetEntry]:
-    """Read budget entries from JSON or CSV file."""
-    if path.name.endswith('.json'):
-        with open(path, encoding='utf-8') as f:
-            return json.load(f)
-    elif path.name.endswith('.csv'):
+def read_csv_or_json(path: Path) -> list[dict]:
+    def read_csv(p):
         with open(p, newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
             return list(reader)
 
+    def read_json(p):
+        with open(path, encoding='utf-8') as f:
+            return json.load(f)
 
-def read_transactions(paths: List[str]) -> List[Transaction]:
+    if path.name.endswith('.json'):
+        return read_json(path)
+    elif path.name.endswith('.csv'):
+        return read_csv(path)
+    else:
+        # try to read anyway
+        try:
+            return read_json(path)
+        except:
+            return read_csv(path)
+
+
+def read_budget(path: Path) -> List[BudgetEntry]:
+    """Read budget entries from JSON or CSV file."""
+    return read_csv_or_json(path)
+
+
+def read_transactions(paths: List[str], period=None) -> List[Transaction]:
     """Read all transactions from CSV files."""
     rows: List[Transaction] = []
+    # TODO update to yield txns with generator
     for p in paths:
         with open(p, newline='', encoding='utf-8') as f:
             reader = csv.DictReader(f)
-            rows.extend(reader)
+            subset = []
+            if period:
+                for r in reader:
+                    if r.get('date', '').startswith(period):
+                        subset.append(r)
+            else:
+                subset = reader
+            rows.extend(subset)
     return rows
 
 
 def aggregate(
-    budget: List[BudgetEntry], transactions: List[Transaction]
-) -> List[Dict[str, Any]]:
-    """Compute actuals and variances per budget entry and produce summary rows."""
-    # Build totals per category
-    totals = defaultdict(float)
-    for row in transactions:
-        cat = row.get('category', '').strip()
-        amt = float(row.get('amount', 0) or 0)
-        totals[cat] += amt
+    transactions: List[Dict[str, Any]], budget: List[Dict[str, Any]], period: str
+) -> Dict[str, Any]:
+    """
+    Aggregate transactions into structured report data.
+    """
+    # Build budget lookup
+    budget_map = {
+        row['name']: row for row in budget if row['type'] in {'income', 'expense'}
+    }
+    fund_map = {row['name']: row for row in budget if row['type'] == 'fund'}
 
-    report_rows: List[Dict[str, Any]] = []
-    summary = {'Income': 0.0, 'Expenses': 0.0}
+    # Group transactions by category
+    txn_by_category: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for txn in transactions:
+        category = txn.get('category', '').strip()
+        txn_by_category[category].append(txn)
 
-    for entry in budget:
-        typ = entry['type']
-        name = entry['name']
-        budget_amt = float(entry.get('budget', 0) or 0)
-        actual = float(entry.get('override_actual', '') or totals.get(name, 0.0))
-        variance = actual - budget_amt
+    # Initialize report
+    report: Dict[str, Any] = {
+        'period': period,
+        'income': {'categories': [], 'total': 0.0},
+        'expenses': {'categories': [], 'total': 0.0},
+        'funds': [],
+        'uncategorized': {'categories': [], 'total': 0.0},
+        'unbudgeted': {'categories': [], 'total': 0.0},
+    }
 
-        row = {
-            'section': 'category' if typ in ('income', 'expense') else 'fund',
-            'period': entry.get('period', ''),
-            'type': typ,
-            'name': name,
-            'budget': budget_amt if typ in ('income', 'expense') else '',
-            'actual': actual if typ in ('income', 'expense') else '',
-            'variance': variance if typ in ('income', 'expense') else '',
-            'start_balance': entry.get('balance', ''),
-            'end_balance': '',
-            'goal': entry.get('goal', ''),
-            'reconcile_amount': entry.get('reconcile_amount', ''),
-            'notes': entry.get('notes', ''),
-        }
+    def fmt_float(value):
+        return round(float(value), 2)
 
-        if typ == 'income':
-            summary['Income'] += actual
-        elif typ == 'expense':
-            summary['Expenses'] += actual
+    # Income/Expenses/Uncategorized/Unbudgeted
+    for category, txns in txn_by_category.items():
+        actual = sum(float(t.get('amount', 0) or 0) for t in txns)
 
-        report_rows.append(row)
+        if not category:  # Uncategorized
+            actual = fmt_float(actual)
+            row = {
+                'name': 'Uncategorized',
+                'transactions': txns,
+                'budget': 0.0,
+                'actual': actual,
+                'variance': actual,
+                'notes': '',
+            }
+            report['uncategorized']['categories'].append(row)
+            report['uncategorized']['total'] += actual
 
-    # Derived summary rows
-    cash_flow = summary['Income'] - summary['Expenses']
-    under_budget = sum(
-        max(0, float(r['budget']) - float(r['actual']))
-        for r in report_rows
-        if r['section'] == 'category' and r['type'] == 'expense'
-    )
-    over_budget = sum(
-        max(0, float(r['actual']) - float(r['budget']))
-        for r in report_rows
-        if r['section'] == 'category' and r['type'] == 'expense'
-    )
+        elif category in budget_map:  # In budget
+            b_row = budget_map[category]
+            budget_val = fmt_float(float(b_row.get('budget') or 0))
+            section = 'income' if b_row['type'] == 'income' else 'expenses'
+            row = {
+                'name': category,
+                'transactions': txns,
+                'budget': budget_val,
+                'actual': actual,
+                'variance': actual - budget_val,
+                'notes': b_row.get('notes', ''),
+            }
+            report[section]['categories'].append(row)
+            report[section]['total'] += actual
 
-    report_rows.extend(
-        [
-            {'section': 'summary', 'name': 'Income', 'actual': summary['Income']},
-            {'section': 'summary', 'name': 'Expenses', 'actual': summary['Expenses']},
-            {'section': 'summary', 'name': 'Cash flow', 'actual': cash_flow},
-            {'section': 'summary', 'name': 'Under budget', 'actual': under_budget},
-            {'section': 'summary', 'name': 'Over budget', 'actual': over_budget},
+        else:  # Not in budget
+            row = {
+                'name': f'Unbudgeted:{category}',
+                'transactions': txns,
+                'budget': 0.0,
+                'actual': actual,
+                'variance': actual,
+                'notes': '',
+            }
+            report['unbudgeted']['categories'].append(row)
+            report['unbudgeted']['total'] += actual
+
+    # Funds
+    for name, b_row in fund_map.items():
+        start_balance = fmt_float(b_row.get('balance') or 0)
+        goal = fmt_float(b_row.get('goal') or 0)
+        reconcile = fmt_float(b_row.get('reconcile_amount') or 0)
+        txns = txn_by_category.get(name, [])
+        actual = sum(fmt_float(t.get('amount', 0) or 0) for t in txns)
+        end_balance = start_balance + actual + reconcile
+
+        report['funds'].append(
             {
-                'section': 'summary',
-                'name': 'Net variance',
-                'actual': under_budget - over_budget,
-            },
+                'name': name,
+                'transactions': txns,
+                'start_balance': start_balance,
+                'actual': actual,
+                'end_balance': end_balance,
+                'goal': goal,
+                'reconcile_amount': reconcile,
+                'notes': b_row.get('notes', ''),
+            }
+        )
+
+    return report
+
+
+def compute_summary(report: dict) -> dict:
+    """
+    Compute summary totals from the structured report.
+    Returns a dict with Income, Expenses, Cash flow, Uncategorized, Unbudgeted.
+    """
+    income = report['income']['total']
+    expenses = report['expenses']['total']
+    uncategorized = report['uncategorized']['total']
+    unbudgeted = report['unbudgeted']['total']
+
+    return {
+        'Income': income,
+        'Expenses': expenses,
+        'Cash flow': income - expenses,
+        'Uncategorized': uncategorized,
+        'Unbudgeted': unbudgeted,
+    }
+
+
+def write_txt_report(report: dict, out: TextIO) -> None:
+    period = report['period']
+    out.write(f'\nBudget Report for {period}\n')
+    out.write('=' * (len(period) + 17) + '\n\n')
+
+    # --- Summary ---
+    summary = compute_summary(report)
+    rows = [[k, v] for k, v in summary.items()]
+    out.write('Summary:\n')
+    out.write(tabulate(rows, headers=['Item', 'Amount'], floatfmt='.2f'))
+    out.write('\n\n')
+
+    # --- Sections ---
+    for section in ['income', 'expenses', 'uncategorized', 'unbudgeted']:
+        rows = [
+            [row['name'], row['budget'], row['actual'], row['variance'], row['notes']]
+            for row in report[section]['categories']
+        ]
+        out.write(f'{section.capitalize()}:\n')
+        if rows:
+            out.write(
+                tabulate(
+                    rows,
+                    headers=['Name', 'Budget', 'Actual', 'Variance', 'Notes'],
+                    floatfmt='.2f',
+                )
+            )
+        else:
+            out.write('(none)')
+        out.write('\n\n')
+
+    # --- Funds ---
+    fund_rows = [
+        [
+            row['name'],
+            row['start_balance'],
+            row['actual'],
+            row['end_balance'],
+            row['goal'],
+            row['reconcile_amount'],
+            row['notes'],
+        ]
+        for row in report['funds']
+    ]
+    out.write('Funds:\n')
+    if fund_rows:
+        out.write(
+            tabulate(
+                fund_rows,
+                headers=[
+                    'Name',
+                    'Start',
+                    'Actual',
+                    'End',
+                    'Goal',
+                    'Reconcile',
+                    'Notes',
+                ],
+                floatfmt='.2f',
+            )
+        )
+    else:
+        out.write('(none)')
+    out.write('\n')
+
+
+def write_csv_report(report: dict, out: TextIO) -> None:
+    writer = csv.writer(out)
+    writer.writerow(
+        [
+            'period',
+            'section',
+            'name',
+            'budget',
+            'actual',
+            'variance',
+            'start_balance',
+            'end_balance',
+            'goal',
+            'reconcile_amount',
+            'notes',
         ]
     )
 
-    return report_rows
+    period = report['period']
+
+    # --- Summary ---
+    summary = compute_summary(report)
+    for key, value in summary.items():
+        writer.writerow([period, 'summary', key, '', value, '', '', '', '', '', ''])
+
+    # --- Sections ---
+    for section in ['income', 'expenses', 'uncategorized', 'unbudgeted']:
+        for row in report[section]['categories']:
+            writer.writerow(
+                [
+                    period,
+                    section,
+                    row['name'],
+                    row.get('budget', ''),
+                    row.get('actual', ''),
+                    row.get('variance', ''),
+                    '',
+                    '',
+                    '',
+                    '',
+                    row.get('notes', ''),
+                ]
+            )
+
+    # --- Funds ---
+    for row in report['funds']:
+        writer.writerow(
+            [
+                period,
+                'funds',
+                row['name'],
+                '',
+                row['actual'],
+                '',
+                row['start_balance'],
+                row['end_balance'],
+                row['goal'],
+                row['reconcile_amount'],
+                row['notes'],
+            ]
+        )
 
 
-def write_csv(path: str, rows: List[Dict[str, Any]]) -> None:
-    fieldnames = [
-        'section',
-        'period',
-        'type',
-        'name',
-        'budget',
-        'actual',
-        'variance',
-        'start_balance',
-        'end_balance',
-        'goal',
-        'reconcile_amount',
-        'notes',
-    ]
-    if path == '-':
-        writer = csv.DictWriter(sys.stdout, fieldnames=fieldnames)
+import json
+from typing import TextIO
+
+
+def write_json_report(report: dict, out: TextIO) -> None:
+    """
+    Write the report to JSON, including the computed summary.
+    """
+    import copy
+
+    enriched_report = copy.deepcopy(report)
+    enriched_report['summary'] = compute_summary(report)
+    # remove txns
+    for section in enriched_report.values():
+        if not isinstance(section, dict):
+            continue
+        for category in section.get('categories', []):
+            category.pop('transactions', None)
+    json.dump(enriched_report, out, indent=2)
+
+
+def init_budget(
+    period: str, output: str, fmt: str = 'json', from_report: Optional[str] = None
+) -> None:
+    """Initialize a new budget file for given period.
+
+    Args:
+        period: Target period in YYYY-MM format.
+        output: Output path or "-" for stdout.
+        fmt: "json" (default) or "csv".
+        from_report: Optional prior report file to clone (json or csv).
+    """
+    budget_rows = []
+
+    if from_report:
+        report_path = Path(from_report)
+
+        if report_path.suffix == '.json':
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+            categories = report.get('categories', [])
+            funds = report.get('funds', [])
+
+        elif report_path.suffix == '.csv':
+            with open(report_path, newline='', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                categories, funds = [], []
+                for row in reader:
+                    section = row.get('section', '').strip().lower()
+                    if section == 'category':
+                        categories.append(row)
+                    elif section == 'fund':
+                        funds.append(row)
+        else:
+            raise ValueError(f'Unsupported report format: {report_path.suffix}')
+
+        # Build budget rows from prior report
+        for c in categories:
+            budget_rows.append(
+                {
+                    'period': period,
+                    'type': c.get('type', 'expense'),
+                    'name': c['name'],
+                    'budget': c.get('budget', 0),
+                    'balance': '',
+                    'goal': '',
+                    'reconcile_amount': '',
+                    'override_actual': '',
+                    'notes': '',
+                }
+            )
+        for f in funds:
+            budget_rows.append(
+                {
+                    'period': period,
+                    'type': 'fund',
+                    'name': f['name'],
+                    'budget': 0,
+                    'balance': f.get('end_balance_calc', f.get('end_balance', 0)),
+                    'goal': f.get('goal', ''),
+                    'reconcile_amount': '',
+                    'override_actual': '',
+                    'notes': '',
+                }
+            )
+
+    else:
+        # Dummy starter template
+        budget_rows = [
+            {
+                'period': period,
+                'type': 'income',
+                'name': 'Salary',
+                'budget': 3000,
+                'balance': '',
+                'goal': '',
+                'reconcile_amount': '',
+                'override_actual': '',
+                'notes': '',
+            },
+            {
+                'period': period,
+                'type': 'expense',
+                'name': 'Rent',
+                'budget': 1200,
+                'balance': '',
+                'goal': '',
+                'reconcile_amount': '',
+                'override_actual': '',
+                'notes': '',
+            },
+            {
+                'period': period,
+                'type': 'expense',
+                'name': 'Food',
+                'budget': 400,
+                'balance': '',
+                'goal': '',
+                'reconcile_amount': '',
+                'override_actual': '',
+                'notes': '',
+            },
+            {
+                'period': period,
+                'type': 'fund',
+                'name': 'Emergency Fund',
+                'budget': 100,
+                'balance': 1500,
+                'goal': 2000,
+                'reconcile_amount': '',
+                'override_actual': '',
+                'notes': '',
+            },
+        ]
+
+    # Write output
+    if fmt == 'json':
+        out = json.dumps(budget_rows, indent=2)
+    elif fmt == 'csv':
+        fieldnames = [
+            'period',
+            'type',
+            'name',
+            'budget',
+            'balance',
+            'goal',
+            'reconcile_amount',
+            'override_actual',
+            'notes',
+        ]
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
-        sys.stdout.flush()
-        try:
-            sys.stdout.close()
-        except Exception:
-            pass
+        writer.writerows(budget_rows)
+        out = buf.getvalue()
     else:
-        with open(path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
+        raise ValueError(f'Unsupported format {fmt}')
 
-
-def write_txt(path: str, rows: List[Dict[str, Any]]) -> None:
-    def fmt_amt(val: Any) -> str:
-        try:
-            return f'{float(val):.2f}'
-        except Exception:
-            return str(val or '')
-
-    lines = []
-    lines.append('=== Budget Report ===')
-    for r in rows:
-        if r['section'] == 'summary':
-            lines.append(f'{r["name"]}: {fmt_amt(r["actual"])}')
-        elif r['section'] == 'category':
-            lines.append(
-                f'- {r["type"].title()} {r["name"]}: '
-                f'Budget {fmt_amt(r["budget"])}, '
-                f'Actual {fmt_amt(r["actual"])}, '
-                f'Variance {fmt_amt(r["variance"])}'
-            )
-        elif r['section'] == 'fund':
-            lines.append(
-                f'- Fund {r["name"]}: Balance {r["start_balance"]} → {r["end_balance"]} '
-                f'(Goal {r["goal"]}, Reconcile {r["reconcile_amount"]})'
-            )
-
-    out = '\n'.join(lines)
-    if path == '-':
-        sys.stdout.write(out + '\n')
+    if output == '-':
+        sys.stdout.write(out)
         sys.stdout.flush()
     else:
-        Path(path).write_text(out, encoding='utf-8')
+        Path(output).write_text(out, encoding='utf-8')
 
 
 def main() -> None:
     args = parse_args()
-    budget = read_budget(args.budget)
-    transactions = read_transactions(args.transactions)
-    rows = aggregate(budget, transactions)
 
-    if args.format == 'csv':
-        write_csv(args.output, rows)
-    else:
-        write_txt(args.output, rows)
+    if args.command == 'report':
+        budget = read_budget(args.budget)
+        # should handle period more intelligently, like generating reports for all periods in the budget
+        # for now just allow one
+        all_periods = set(r['period'] for r in budget)
+        if len(all_periods) > 1:
+            util.eprint(
+                f'Budget must contain only one period (for now). Periods: {all_periods}'
+            )
+            exit(1)
+        period = list(all_periods)[0]
+
+        transactions = read_transactions(args.transactions, period=period)
+
+        aggregated = aggregate(transactions, budget, period)
+
+        if args.format == 'txt':
+            write_txt_report(
+                aggregated, sys.stdout if args.output == '-' else open(args.output, 'w')
+            )
+        elif args.format == 'csv':
+            write_csv_report(
+                aggregated,
+                sys.stdout
+                if args.output == '-'
+                else open(args.output, 'w', newline=''),
+            )
+        elif args.format == 'json':
+            out = sys.stdout if args.output == '-' else open(args.output, 'w')
+            write_json_report(aggregated, out)
+        else:
+            raise ValueError(f'Unsupported format: {args.format}')
+
+    elif args.command == 'init':
+        if args.from_report:
+            if args.from_report.name.endswith('.csv'):
+                # TODO write this function
+                budget = budget_from_report_csv(args.from_report, args.period)
+            elif args.from_report.name.endswith('.json'):
+                # TODO write this function
+                budget = budget_from_report_json(args.from_report, args.period)
+            else:
+                raise ValueError(f'Unsupported report format: {args.from_report}')
+        else:
+            budget = budget_dummy(args.period)
+
+        if args.format == 'json':
+            out = sys.stdout if args.output == '-' else open(args.output, 'w')
+            json.dump(budget, out, indent=2)
+        elif args.format == 'csv':
+            write_budget_csv(
+                budget,
+                sys.stdout
+                if args.output == '-'
+                else open(args.output, 'w', newline=''),
+            )
+        else:
+            raise ValueError(f'Unsupported format: {args.format}')
 
 
 if __name__ == '__main__':
