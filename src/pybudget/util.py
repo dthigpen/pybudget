@@ -25,7 +25,7 @@ def stable_id(row: dict[str, str]) -> str:
     """Generate stable hash ID from critical fields."""
     raw_id = '|'.join(
         [
-            row.get(col, '').strip()
+            str(row.get(col, '')).strip()
             for col in ['date', 'description', 'amount', 'account']
         ]
     )

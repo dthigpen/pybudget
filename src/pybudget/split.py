@@ -15,31 +15,12 @@ import csv
 import sys
 import signal
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional, Sequence
 
 from pybudget import util
 
 # pipe-safe: exit quietly on broken pipes
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description='Split normalized transactions by period.'
-    )
-    parser.add_argument(
-        'inputs', nargs='*', help='Normalized CSV files (default: stdin).'
-    )
-    parser.add_argument(
-        '--by',
-        choices=['day', 'month', 'year'],
-        required=True,
-        help='Split by day, month, or year.',
-    )
-    parser.add_argument(
-        '-o', '--output-dir', required=True, help='Directory to write split files.'
-    )
-    return parser.parse_args()
 
 
 def get_period(date_str: str, by: str) -> str:
@@ -56,7 +37,7 @@ def get_period(date_str: str, by: str) -> str:
 
 def split_file(path: str, by: str, out_dir: Path) -> None:
     """Split a single input CSV file into multiple period-based files."""
-    if path == '-':
+    if path == '-' or not path:
         f = sys.stdin
     else:
         f = open(path, newline='', encoding='utf-8')
@@ -86,16 +67,43 @@ def split_file(path: str, by: str, out_dir: Path) -> None:
                     writers[period][0].writerow(row)
 
 
-def main() -> None:
-    args = parse_args()
+def setup_parser(parser: argparse.ArgumentParser) -> None:
+    """Add split-specific arguments to a parser."""
+    parser.add_argument(
+        'input_csvs', nargs='*', help='Normalized CSV files (default: stdin).'
+    )
+    parser.add_argument(
+        '--by',
+        choices=['day', 'month', 'year'],
+        required=True,
+        help='Split by day, month, or year.',
+    )
+    parser.add_argument(
+        '-o', '--output-dir', required=True, help='Directory to write split files.'
+    )
+    parser.set_defaults(func=run)
+
+
+def run(args: argparse.Namespace) -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.inputs:
-        for path in args.inputs:
+    if args.input_csvs:
+        for path in args.input_csvs:
             split_file(path, args.by, out_dir)
     else:
         split_file('-', args.by, out_dir)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    parser = argparse.ArgumentParser(
+        description='Split normalized transactions by day, month, or year'
+    )
+    setup_parser(parser)
+    args = parser.parse_args(argv)
+    args.func(args)
 
 
 if __name__ == '__main__':

@@ -4,38 +4,12 @@ import csv
 import sys
 from pathlib import Path
 from collections import OrderedDict
+from typing import Optional, Sequence
 import signal
 
 from pybudget.util import stable_id, eprint, order_columns
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description='Merge normalized transactions with updates (categorization, notes, adds, deletes).'
-    )
-    parser.add_argument(
-        'transaction_files', help='Primary transactions CSV (base file).', nargs='+'
-    )
-    parser.add_argument(
-        '-s',
-        '--changeset',
-        nargs='*',
-        help='Update CSVs (e.g., categorizations, adds, deletes).',
-    )
-    parser.add_argument(
-        '-o',
-        '--output',
-        help='Output file (default: stdout).',
-    )
-    # TODO change this to warn-dangling and error out by default
-    parser.add_argument(
-        '--skip-dangling',
-        action='store_true',
-        help='Skip changeset rows that have unknown IDs.',
-    )
-    return parser.parse_args()
 
 
 def read_csv(path):
@@ -112,8 +86,32 @@ def flatten(xss) -> list:
     return [x for xs in xss for x in xs]
 
 
-def main():
-    args = parse_args()
+def setup_parser(parser: argparse.ArgumentParser) -> None:
+    """Add merge-specific arguments to a parser."""
+    parser.add_argument(
+        'transaction_files', help='Primary transactions CSV (base file).', nargs='+'
+    )
+    parser.add_argument(
+        '-s',
+        '--changeset',
+        nargs='*',
+        help='Update CSVs (e.g., categorizations, adds, deletes).',
+    )
+    parser.add_argument(
+        '-o',
+        '--output',
+        help='Output file (default: stdout).',
+    )
+    # TODO change this to warn-dangling and error out by default
+    parser.add_argument(
+        '--skip-dangling',
+        action='store_true',
+        help='Skip changeset rows that have unknown IDs.',
+    )
+    parser.set_defaults(func=run)
+
+
+def run(args: argparse.Namespace) -> None:
     primary_rows_lists = [read_csv(p) for p in args.transaction_files]
     primary_rows = flatten(primary_rows_lists)
     secondaries = [read_csv(s) for s in args.changeset]
@@ -128,6 +126,17 @@ def main():
         )
     merged_rows.sort(key=lambda d: d.get('date', ''), reverse=False)
     write_csv(merged_rows, header_cols, args.output)
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    parser = argparse.ArgumentParser(
+        description='Merge normalized transactions with updates (categorization, notes, adds, deletes).'
+    )
+    setup_parser(parser)
+    args = parser.parse_args(argv)
+    args.func(args)
 
 
 if __name__ == '__main__':

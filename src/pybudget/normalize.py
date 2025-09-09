@@ -17,7 +17,7 @@ import hashlib
 import sys
 import signal
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Sequence
 import configparser
 
 from pybudget.util import stable_id
@@ -35,20 +35,6 @@ NORMALIZED_COLUMNS = [
     'category',
     'notes',
 ]
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Normalize bank CSV transactions.')
-    parser.add_argument(
-        'inputs', nargs='*', help='CSV files to normalize (default: stdin).'
-    )
-    parser.add_argument(
-        '--importers', nargs='+', required=True, help='INI importer config files.'
-    )
-    parser.add_argument(
-        '-o', '--output', default='-', help='Output file (default: stdout).'
-    )
-    return parser.parse_args()
 
 
 def load_importers(paths: List[str]) -> List[configparser.ConfigParser]:
@@ -113,6 +99,11 @@ def normalize_row(
         elif val_key in sect:
             norm[field] = sect[val_key].strip()
 
+    flip_sign = sect.get('flip_sign', 'false').lower() in ('true', 1, 'yes')
+
+    norm['amount'] = float(norm['amount'])
+    if flip_sign:
+        norm['amount'] *= -1
     # Add stable id
     norm['id'] = stable_id(norm)
     return norm
@@ -135,11 +126,21 @@ def process_file(
             writer.writerow(normalize_row(row, importer))
 
 
-def main() -> None:
-    args = parse_args()
+def setup_parser(parser: argparse.ArgumentParser) -> None:
+    """Add normalize-specific arguments to a parser."""
+    parser.add_argument('input_csvs', nargs='+', help='Input CSV(s)')
+    parser.add_argument(
+        '--importers', nargs='+', required=True, help='INI importer config files.'
+    )
+    parser.add_argument('-o', '--output', help='Output CSV (default: stdout)')
+    parser.set_defaults(func=run)
+
+
+def run(args: argparse.Namespace) -> None:
+    # print(f"Normalizing {args.input} → {args.output or 'stdout'}")
     importers = load_importers(args.importers)
 
-    if args.output == '-':
+    if args.output == '-' or not args.output:
         out_f = sys.stdout
     else:
         out_f = open(args.output, 'w', newline='', encoding='utf-8')
@@ -148,8 +149,8 @@ def main() -> None:
         writer = csv.DictWriter(out_f, fieldnames=NORMALIZED_COLUMNS)
         writer.writeheader()
 
-        if args.inputs:
-            for path in args.inputs:
+        if args.input_csvs:
+            for path in args.input_csvs:
                 process_file(path, importers, writer)
         else:
             process_file('-', importers, writer)
@@ -159,6 +160,15 @@ def main() -> None:
             out_f.close()
         except Exception:
             pass
+
+
+def main(argv: Optional[Sequence[str]] = None) -> None:
+    if argv is None:
+        argv = sys.argv[1:]
+    parser = argparse.ArgumentParser(description='Normalize raw bank transactions')
+    setup_parser(parser)
+    args = parser.parse_args(argv)
+    args.func(args)
 
 
 if __name__ == '__main__':

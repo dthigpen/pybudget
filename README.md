@@ -1,61 +1,107 @@
 # pybudget
 
-**PyBudget** is a collection of small Python scripts for managing personal finances. It uses standard plain-text file formats like CSV, JSON, and INI.
+**pybudget** is a lightweight, Unix-inspired budgeting toolkit written in Python.
+It helps you normalize, merge, and report on financial transactions while staying transparent, flexible, and scriptable.
 
-Instead of a monolithic app, it follows the Unix philosophy: each script does one job and you chain them together to build a budgetting process that suites your needs.
+Unlike most budgeting apps, pybudget avoids hidden databases or complicated GUIs.
+It works directly on CSV/JSON files, making it easy to audit, customize, and fit into your own workflows.
 
-## Purpose
-
-- **Your data stays in plain CSVs** that you can open in any editor or spreadsheet.
-- **The process is transparent:** every step is just a script that you can read, modify, and re-run
-- **It's composable:** use only the parts you want, automate with shell pipelines, or wrap in your own python scripts.
-
-## Budgeting Goals
-
-- Track income & expenses clearly by category.
-- Stay flexible: you can adjust categories and notes later without breaking the workflow.
-- Reconcile monthly cash flow: see where extra money goes or where deficits are pulled from.
-- Build and monitor funds (emergency, travel, etc.) with balances and goals.
-- Generate monthly reports in both CSV and TXT.
-
-## Non-Goals
-
-- Double-ledger accounting, as seen in tools like hledger or beancount are very powerful but can also be very complicated and tedious. I find that this level of complexity can discourage long term usage.
-
-## Example Workflow 
-
-Coming Soon
 
 ## Installation
 
+Clone and install directly from GitHub:
+
+```
+pip install git+https://github.com/dthigpen/pybudget.git
+```
+
+This provides a single command:
+
+```
+pybudget <subcommand> [options]
+```
+
+Subcommands include normalize, split, merge, and report.
+
+## Goals
+
+- **Plain files first**: All inputs/outputs are CSV or JSON. Easy to edit by hand, version-control, or share.
+- **Composability**: Each step does one job, and can be piped into the next.
+- **Auditability**: You can always inspect intermediate files — no opaque state.
+- **Portability**: Works anywhere Python runs, no database required.
+
+## Non-Goals
+
+- Not a personal finance tracker with bank syncs or live dashboards.
+- Not a full bookkeeping system.
+- Doesn’t try to enforce “one true workflow” — you assemble the steps you need.
+
+## Example Workflow
+
 ```bash
-pip install git+ssh://git@github.com:dthigpen/pybudget.git
+Here’s a minimal flow to get started:
+
+# Normalize raw bank CSVs into a consistent format
+pybudget normalize bank-transactions/*.csv --importers importers/*.ini \
+    -o normalized-transactions/all.csv
+
+# Split normalized transactions into month files
+pybudget split normalized-transactions/all.csv -o monthly/
+
+# Apply manual categorization/notes (via update files), then merge
+pybudget merge monthly/2025-05-transactions.csv transaction-updates/2025-05-updates.csv \
+    -o final/2025-05.csv
+
+# Run a budget report against a budget file
+pybudget report --budget budgets/2025-05.json --transactions final/2025-05.csv
 ```
 
-## Usage
+## Subcommands
 
-1. Setup a folder where you would like to store your budget and transaction data, and navigate to it.
-   ```
-   $ mkdir ~/budget && cd ~/budget
-   ```
-2. Download a CSV of transactions from your bank. E.g. `my-bank-export-2025-02.csv`
-3. In your budget directory, run `pybudget init`. You should see a file called `pybudget.json` with some of its contents looking like:
-   ```json
-   {
-       "importers": [
-           {
-               "name": "My Bank Checking",
-               "descriptionColumn": "Description",
-               "amountColumn": "Amount",
-               "accountValue": "My Bank Checking",
-               "dateColumn": "Date",
-               "dateFormat": "%Y-%m-%d",
-           }
-       ]
-   }
-   ```
-4. Check the columns in your bank's CSV and make any changes to the column names or date format that pybudget will look for.
-5. Import the transactions.
+### `normalize`
+
+Convert bank-specific CSVs into a consistent schema (date, description, amount, account, id, ...).
+Requires one or more importer configs (.ini) describing column mappings.
+
+Example:
+
+```bash
+pybudget normalize bank.csv --importers importers/bank.ini -o normalized.csv
 ```
-$ pybudget import transactions --importer 'My Bank Checking' my-bank-export-2025-02.csv
+
+---
+
+### `split`
+
+Split a transaction file into multiple files by month (or other criteria).
+Useful for keeping transactions organized by period.
+
+Example:
+
+```bash
+pybudget split normalized.csv -o monthly/
+```
+
+### `merge`
+
+- **Apply** updates to a base transaction file. Updates can:
+- **Update** existing rows by id.
+- **Add** new rows (no id).
+- **Delete** rows (id only, other fields empty).
+
+Example:
+
+```bash
+pybudget merge monthly/2025-05.csv updates/2025-05-updates.csv -o final/2025-05.csv
+```
+
+### `report`
+
+Generate budget reports from a budget definition (JSON or CSV) and a set of transactions.
+Outputs text (default) or CSV for further processing.
+
+Example:
+
+```bash
+pybudget report --budget budgets/2025-05.json --transactions final/2025-05.csv
 ```
