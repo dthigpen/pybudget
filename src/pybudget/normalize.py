@@ -19,8 +19,9 @@ import signal
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Sequence
 import configparser
+import re
 
-from pybudget.util import stable_id
+from pybudget import util
 
 # pipe-safe: exit quietly on broken pipes
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -35,78 +36,150 @@ NORMALIZED_COLUMNS = [
     'category',
     'notes',
 ]
+IMPORTER_SECTION_NAME = 'importer'
+
+def snake_to_camel(s: str) -> str:
+    """Convert snake_case (or kebab-case) to camelCase."""
+    parts = re.split(r'[_-]+', s)
+    return parts[0] + ''.join(p.capitalize() for p in parts[1:])
 
 
-def load_importers(paths: List[str]) -> List[configparser.ConfigParser]:
-    """Load INI importer configs."""
-    configs = []
-    for path in paths:
-        cfg = configparser.ConfigParser()
-        try:
-            cfg.read(path)
-        except configparser.MissingSectionHeaderError:
-            cfg_string = '[DEFAULT]\n' + Path(path).read_text()
-            cfg.read_string(cfg_string)
-        configs.append(cfg)
-    return configs
+def load_importer(path: Path) -> Dict[str, Any]:
+    """
+    Load a single importer INI file into a normalized dict.
+    Keys are camelCase regardless of input style.
+    """
+    cfg = configparser.ConfigParser()
+    text = path.read_text()
+
+    # Allow configs without explicit [importer] section header
+    if not text.strip().lower().startswith('['):
+        text = f'[importer]\n{text}'
+
+    cfg.read_string(text)
+
+    if 'importer' not in cfg:
+        raise ValueError(f'No [importer] section found in {path}')
+
+    sect = cfg['importer']
+
+    # Normalize keys to camelCase
+    importer_dict: Dict[str, Any] = {}
+    for key, val in sect.items():
+        camel_key = snake_to_camel(key.strip())
+        importer_dict[camel_key] = val.strip()
+
+    importer_dict['__path__'] = str(path)  # keep reference for debugging
+    return importer_dict
 
 
 def match_importer(
-    header: List[str], importers: List[configparser.ConfigParser], filename: str = None
-) -> configparser.ConfigParser:
+    header: List[str], importers: List[Dict[str, Any]], filename: str | None = None
+) -> Dict[str, Any]:
     """
-    Match a CSV header against importers.
-    Uses `match_header` (exact) or `match_header_pattern` (regex).
+    Match a CSV header against a list of importer dicts.
+    Uses matchHeader (exact), matchHeaderPattern (regex), or matchFileNamePattern (regex).
     """
-    import re
-
     header_str = ','.join(header)
 
-    for cfg in importers:
-        if 'DEFAULT' not in cfg:
-            continue
-        sect = cfg['DEFAULT']
+    for imp in importers:
+        if 'matchHeader' in imp:
+            if header_str == imp['matchHeader']:
+                return imp
+        if 'matchHeaderPattern' in imp:
+            if re.fullmatch(imp['matchHeaderPattern'], header_str):
+                return imp
+        if 'matchFileNamePattern' in imp and filename and filename != '-':
+            if re.fullmatch(imp['matchFileNamePattern'], filename):
+                return imp
 
-        if 'match_header' in sect:
-            if header_str == sect['match_header']:
-                return cfg
-        if 'match_header_pattern' in sect:
-            if re.fullmatch(sect['match_header_pattern'], header_str):
-                return cfg
-        if 'match_file_name_pattern' in sect and filename and filename != '-':
-            if re.fullmatch(sect['match_file_name_pattern'], filename):
-                return cfg
     sys.stderr.write(f'ERROR: No importer matched header: {header_str}\n')
     sys.exit(1)
 
 
-def normalize_row(
-    row: Dict[str, str], importer: configparser.ConfigParser
-) -> Dict[str, Any]:
+def normalize_row(row: Dict[str, str], importer: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Normalize a single row according to importer config.
-    Supports *_column (source mapping) and *_value (static values).
+    Normalize a single row according to importer config dict.
+    Supports *Column (source mapping) and *Value (static values).
     """
-    sect = importer['DEFAULT']
     norm = {col: '' for col in NORMALIZED_COLUMNS}
 
     for field in ['date', 'description', 'amount', 'account', 'category', 'notes']:
-        col_key = f'{field}_column'
-        val_key = f'{field}_value'
+        col_key = f'{field}Column'
+        val_key = f'{field}Value'
 
-        if col_key in sect and sect[col_key] in row:
-            norm[field] = row[sect[col_key]].strip()
-        elif val_key in sect:
-            norm[field] = sect[val_key].strip()
+        if col_key in importer and importer[col_key] in row:
+            norm[field] = row[importer[col_key]].strip()
+        elif val_key in importer:
+            norm[field] = importer[val_key].strip()
 
-    flip_sign = sect.get('flip_sign', 'false').lower() in ('true', 1, 'yes')
+    # Handle amount + flipSign
+    try:
+        norm['amount'] = float(norm['amount'])
+    except (TypeError, ValueError):
+        norm['amount'] = 0.0
 
-    norm['amount'] = float(norm['amount'])
+    flip_sign = importer.get('flipSign', 'false').lower() in ('true', '1', 'yes')
     if flip_sign:
         norm['amount'] *= -1
+
     # Add stable id
-    norm['id'] = stable_id(norm)
+    norm['id'] = util.stable_id(norm)
     return norm
+
+
+def normalize_keys(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize dict keys to camelCase."""
+
+    def to_camel(s: str) -> str:
+        parts = s.replace('-', '_').split('_')
+        return parts[0] + ''.join(p.capitalize() for p in parts[1:])
+
+    return {to_camel(k): v for k, v in d.items()}
+
+
+def load_ini_importer(path: Path) -> Dict[str, Any]:
+    """Load and normalize a single INI importer config into dict form."""
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(path)
+    except configparser.MissingSectionHeaderError:
+        # Wrap raw key=val files with a section
+        cfg_string = '[importer]\n' + path.read_text()
+        cfg.read_string(cfg_string)
+
+    if 'importer' not in cfg:
+        raise ValueError(f'Importer file {path} missing [importer] section')
+
+    return normalize_keys(dict(cfg['importer']))
+
+
+def load_json_importer(path: Path) -> Dict[str, Any]:
+    """Load and normalize a single JSON importer config into dict form."""
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict):
+        raise ValueError(f'Importer JSON {path} must be an object at the top level')
+
+    return normalize_keys(data)
+
+
+def load_importers(paths: List[Path]) -> List[Dict[str, Any]]:
+    """
+    Load multiple importers (INI or JSON).
+    Returns list of normalized dicts.
+    """
+    importers: List[Dict[str, Any]] = []
+
+    for path in paths:
+        ext = path.suffix.lower()
+        if ext in ('.ini', ''):
+            importers.append(load_ini_importer(path))
+        elif ext == '.json':
+            importers.append(load_json_importer(path))
+        else:
+            raise ValueError(f'Unsupported importer format: {path}')
+
+    return importers
 
 
 def process_file(
@@ -130,7 +203,11 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     """Add normalize-specific arguments to a parser."""
     parser.add_argument('input_csvs', nargs='+', help='Input CSV(s)')
     parser.add_argument(
-        '--importers', nargs='+', required=True, help='INI importer config files.'
+        '--importers',
+        nargs='+',
+        type=util.existing_file,
+        required=True,
+        help='INI importer config files.',
     )
     parser.add_argument('-o', '--output', help='Output CSV (default: stdout)')
     parser.set_defaults(func=run)

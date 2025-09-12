@@ -1,5 +1,6 @@
 import hashlib
 import sys
+from pathlib import Path
 
 DEFAULT_ORDERED_COLUMNS = [
     'id',
@@ -34,3 +35,10 @@ def stable_id(row: dict[str, str]) -> str:
 
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
+
+
+def existing_file(p: str) -> Path:
+    p = Path(p)
+    if not p.is_file():
+        raise argparse.ArgumentTypeError(f'Path {p} must be an existing file')
+    return p

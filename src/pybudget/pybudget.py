@@ -1,6 +1,6 @@
 import argparse
 import sys
-from . import normalize, split, merge, report
+from . import normalize, split, apply, report, init
 
 
 def main(argv=None) -> None:
@@ -8,6 +8,12 @@ def main(argv=None) -> None:
         argv = sys.argv[1:]
     parser = argparse.ArgumentParser(prog='pybudget', description='Budgeting CLI')
     subparsers = parser.add_subparsers(dest='command', required=True)
+
+    init_parser = subparsers.add_parser(
+        'init',
+        help='Initialize starter files. (e.g. an importer, changeset, or budget file)',
+    )
+    init.setup_parser(init_parser)
 
     normalize_parser = subparsers.add_parser(
         'normalize', help='Normalize raw bank transactions'
@@ -19,10 +25,10 @@ def main(argv=None) -> None:
     )
     split.setup_parser(split_parser)
 
-    merge_parser = subparsers.add_parser(
-        'merge', help='Merge transaction updates into base file'
+    apply_parser = subparsers.add_parser(
+        'apply', help='apply transaction updates into base file'
     )
-    merge.setup_parser(merge_parser)
+    apply.setup_parser(apply_parser)
 
     report_parser = subparsers.add_parser('report', help='Generate budget reports')
     report.setup_parser(report_parser)

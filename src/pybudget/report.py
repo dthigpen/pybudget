@@ -33,16 +33,6 @@ Transaction = Dict[str, str]
 BudgetEntry = Dict[str, Any]
 
 
-def existing_file(p: str) -> Path:
-    p = Path(p)
-    if not p.is_file():
-        raise argparse.ArgumentTypeError(f'Path {p} must be an existing file')
-    return p
-
-
-import argparse
-
-
 def read_csv_or_json(path: Path) -> list[dict]:
     def read_csv(p):
         with open(p, newline='', encoding='utf-8') as f:
@@ -507,7 +497,10 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     # --- report subcommand (existing) ---
     # report_parser = subparsers.add_parser('report', help='Generate budget report')
     parser.add_argument(
-        '--budget', required=True, type=existing_file, help='Budget JSON or CSV file'
+        '--budget',
+        required=True,
+        type=util.existing_file,
+        help='Budget JSON or CSV file',
     )
     parser.add_argument(
         '--transactions', required=True, nargs='+', help='Transaction CSV file(s)'
