@@ -1,6 +1,6 @@
 import argparse
 import sys
-from . import normalize, split, apply, report, init
+from . import normalize, split, apply, report, init, categorize
 
 
 def main(argv=None) -> None:
@@ -24,6 +24,11 @@ def main(argv=None) -> None:
         'split', help='Split transactions into files by group'
     )
     split.setup_parser(split_parser)
+
+    categorize_parser = subparsers.add_parser(
+        'categorize', help='categorize transactions'
+    )
+    categorize.setup_parser(categorize_parser)
 
     apply_parser = subparsers.add_parser(
         'apply', help='apply transaction updates into base file'

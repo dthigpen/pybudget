@@ -38,6 +38,7 @@ NORMALIZED_COLUMNS = [
 ]
 IMPORTER_SECTION_NAME = 'importer'
 
+
 def snake_to_camel(s: str) -> str:
     """Convert snake_case (or kebab-case) to camelCase."""
     parts = re.split(r'[_-]+', s)

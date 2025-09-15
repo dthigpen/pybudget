@@ -54,7 +54,7 @@ This provides a single command:
 pybudget <subcommand> [options]
 ```
 
-Subcommands include `normalize`, `split`, `apply`, and `report`.
+Subcommands include `normalize`, `split`, `categorize`, `apply`, and `report`.
 
 ## Subcommands
 
@@ -122,7 +122,7 @@ Or in JSON format, `my-card-importer.json`:
 }
 
 ```
-These importers says:
+These importers say:
 
 - Read the "Transaction Date", "Description", and "Amount" columns from the input CSV for the normalized date, description, and amount normalized columns.
 - Mark all transactions from this file as belonging to the "My Credit Card" account.
@@ -144,6 +144,28 @@ Example:
 ```bash
 pybudget split normalized.csv -o monthly/
 ```
+
+### `categorize`
+
+An interactive utility to help streamline the tedium of categorizing tasks by providing category suggestions and menu to navigate through transactions.
+
+Example:
+```bash
+$ pybudget categorize monthly/2025-05-transactions.csv --categorized final-txns/*.csv --output updates/2025-05-updates.csv
+
+Txn 1/98
+Date: 2025-07-01
+Amount: -30.50
+Account: My Credit Card
+Description: WM SUPERCENTER #1234 (id=a4e7ab18d8)
+Category: 
+  Suggestions:
+    1. Groceries (1.00)
+    2. Household (0.67)
+[n]ext, [p]rev, [c]onfirm, [1-9]=pick, [e]dit, [q]uit > 1
+```
+
+This will iterate through transactions in the `2025-05-08-transactions.csv` file, prompting the user with suggested categories from the past categorized `final-txns/*.csv`. By the output file `2025-05-08-changes.csv` will be updated with prompt responses, not overwritten.
 
 ### `apply`
 
@@ -177,7 +199,7 @@ In CSV format it might be considerably easier to edit these in a spreadsheet app
 [
   {
     "type": "update",
-    "category: ", 'Groceries"
+    "category: ", "Groceries"
   }
 ]
 ```
@@ -204,5 +226,4 @@ pybudget report --budget budgets/2025-05.json --transactions final/2025-05.csv
 - Add diagram to README showing workflow.
 - Add full narrative workflow example, to show how a person would use this tool from start to finish.
 - Expand on report feature.
-- Add category suggestions feature
 - Add feature for interactively making updates to a transaction set.

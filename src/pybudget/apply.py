@@ -6,33 +6,9 @@ from pathlib import Path
 from typing import Optional, Sequence, Any
 import signal
 
-from pybudget.util import stable_id, eprint, order_columns
+from pybudget.util import stable_id, eprint, order_columns, read_csv, write_csv
 
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
-
-
-def read_csv(path):
-    with open(path, newline='') as f:
-        return list(csv.DictReader(f))
-
-
-def write_csv(rows, fieldnames, path=None):
-    if path is None or path == '-':
-        writer = csv.DictWriter(
-            sys.stdout, fieldnames=fieldnames, extrasaction='ignore'
-        )
-        writer.writeheader()
-        writer.writerows(rows)
-        sys.stdout.flush()
-        try:
-            sys.stdout.close()
-        except Exception:
-            pass  # don't care if stdout is already closed (e.g. piping)
-    else:
-        with open(path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
-            writer.writeheader()
-            writer.writerows(rows)
 
 
 def apply_changeset(
@@ -72,9 +48,7 @@ def apply_changeset(
                     sys.exit(f'ERROR: {msg}')
 
         elif action == 'update':
-            eprint(f'Update txn with id {rid}')
             if rid in merged:
-                eprint(f'{nonempty_fields=}')
                 merged[rid].update(nonempty_fields)
             else:
                 msg = f'update: dangling id {rid}'
@@ -219,7 +193,7 @@ def run(args: argparse.Namespace) -> None:
         )
 
     merged_rows.sort(key=lambda d: d.get('date', ''), reverse=False)
-    write_csv(merged_rows, header_cols, args.output)
+    write_csv(merged_rows, path=args.output, fieldnames=header_cols)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
