@@ -110,12 +110,11 @@ def aggregate(
     def fmt_float(value):
         return round(float(value), 2)
 
-    # Income/Expenses/Uncategorized/Unbudgeted
     for category, txns in txn_by_category.items():
         actual = sum(float(t.get('amount', 0) or 0) for t in txns)
+        actual = fmt_float(actual)
 
         if not category:  # Uncategorized
-            actual = fmt_float(actual)
             row = {
                 'name': 'Uncategorized',
                 'transactions': txns,
@@ -127,9 +126,27 @@ def aggregate(
             report['uncategorized']['categories'].append(row)
             report['uncategorized']['total'] += actual
 
-        # elif category == 'hidden':
-        #     report['hidden']
-        elif category in budget_map:  # In budget
+        elif category in fund_map:  # Treat transactions toward a fund
+            f_row = fund_map[category]
+            start_balance = fmt_float(f_row.get('balance') or 0)
+            goal = fmt_float(f_row.get('goal') or 0)
+            reconcile = fmt_float(f_row.get('reconcile_amount') or 0)
+            end_balance = start_balance + actual + reconcile
+
+            report['funds'].append(
+                {
+                    'name': category,
+                    'transactions': txns,
+                    'start_balance': start_balance,
+                    'actual': actual,
+                    'end_balance': end_balance,
+                    'goal': goal,
+                    'reconcile_amount': reconcile,
+                    'notes': f_row.get('notes', ''),
+                }
+            )
+
+        elif category in budget_map:  # Regular income/expense
             b_row = budget_map[category]
             budget_val = fmt_float(float(b_row.get('budget') or 0))
             section = 'income' if b_row['type'] == 'income' else 'expenses'
@@ -143,7 +160,8 @@ def aggregate(
             }
             report[section]['categories'].append(row)
             report[section]['total'] += actual
-        else:  # Not in budget
+
+        else:  # Not in budget or fund list
             row = {
                 'name': f'Unbudgeted:{category}',
                 'transactions': txns,
@@ -155,27 +173,24 @@ def aggregate(
             report['unbudgeted']['categories'].append(row)
             report['unbudgeted']['total'] += actual
 
-    # Funds
-    for name, b_row in fund_map.items():
-        start_balance = fmt_float(b_row.get('balance') or 0)
-        goal = fmt_float(b_row.get('goal') or 0)
-        reconcile = fmt_float(b_row.get('reconcile_amount') or 0)
-        txns = txn_by_category.get(name, [])
-        actual = sum(fmt_float(t.get('amount', 0) or 0) for t in txns)
-        end_balance = start_balance + actual + reconcile
-
-        report['funds'].append(
-            {
-                'name': name,
-                'transactions': txns,
-                'start_balance': start_balance,
-                'actual': actual,
-                'end_balance': end_balance,
-                'goal': goal,
-                'reconcile_amount': reconcile,
-                'notes': b_row.get('notes', ''),
-            }
-        )
+    # Add any funds with no transactions yet
+    for name, f_row in fund_map.items():
+        if not any(f['name'] == name for f in report['funds']):
+            start_balance = fmt_float(f_row.get('balance') or 0)
+            goal = fmt_float(f_row.get('goal') or 0)
+            reconcile = fmt_float(f_row.get('reconcile_amount') or 0)
+            report['funds'].append(
+                {
+                    'name': name,
+                    'transactions': [],
+                    'start_balance': start_balance,
+                    'actual': 0.0,
+                    'end_balance': start_balance + reconcile,
+                    'goal': goal,
+                    'reconcile_amount': reconcile,
+                    'notes': f_row.get('notes', ''),
+                }
+            )
 
     return report
 

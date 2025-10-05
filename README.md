@@ -225,5 +225,7 @@ pybudget report --budget budgets/2025-05.json --transactions final/2025-05.csv
 - Unit tests, unit test, unit tests.
 - Add diagram to README showing workflow.
 - Add full narrative workflow example, to show how a person would use this tool from start to finish.
+- Expand on apply feature.
 - Expand on report feature.
-- Add feature for interactively making updates to a transaction set.
+- Add output to import command to show summary of imported transactions.
+- Improve reporting use case where initial balances are unknown. E.g. user wanting report on categorized transactions.

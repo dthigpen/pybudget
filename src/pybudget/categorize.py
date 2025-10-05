@@ -50,14 +50,9 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         '--auto-confirm',
         action='store_true',
-        help="Automatically confirm suggested categories without prefixing 'suggested:'",
+        help="Automatically confirm suggested categories without prefixing 'suggested:'. Only appies when --no-input is used",
     )
     parser.set_defaults(func=run)
-
-
-# def read_csv(path: str) -> List[Dict[str, str]]:
-#     with open(path, newline="", encoding="utf-8") as f:
-#         return list(csv.DictReader(f))
 
 
 def write_update(update: dict, args, updates: List[dict]):
@@ -136,8 +131,7 @@ def process_interactive(args, txns: List[dict], reference: List[dict]):
         elif choice.isdigit():
             sel = int(choice) - 1
             if 0 <= sel < len(suggestions):
-                cat = suggestions[sel][0]
-                category = cat if args.auto_confirm else f'suggested:{cat}'
+                category = suggestions[sel][0]
                 update = {'type': 'update', 'id': tid, 'category': category}
                 write_update(update, args, updates)
                 known.append({'description': desc, 'category': category})
