@@ -75,6 +75,152 @@ def write_update(update: dict, args, updates: List[dict]):
         sys.exit('ERROR: output file must end with .csv or .json')
 
 
+def process_edit_interactive(args, txns: List[dict], reference: List[dict]):
+    """
+    Interactive editor for reviewing and modifying transactions.
+    Supports categorization, edits, splits, adds, and deletes.
+    """
+    updates: List[dict] = []
+    known = reference[:]  # transactions used for category suggestions
+    idx = 0
+
+    def print_txn(txn, idx):
+        print(f'\nTxn {idx + 1}/{len(txns)}')
+        print(f'ID: {txn.get("id", "")}')
+        print(f'Date: {txn.get("date", "")}')
+        print(f'Amount: {txn.get("amount", "")}')
+        print(f'Account: {txn.get("account", "")}')
+        print(f'Description: {txn.get("description", "")}')
+        print(f'Category: {txn.get("category", "") or "(none)"}')
+
+    while 0 <= idx < len(txns):
+        txn = txns[idx]
+        tid = txn.get('id')
+        desc = txn.get('description', '')
+        suggestions = suggest_categories(desc, known)
+        suggested_cat = suggestions[0][0] if suggestions else None
+
+        print_txn(txn, idx)
+
+        if suggestions:
+            print('  Suggestions:')
+            for i, (cat, score) in enumerate(suggestions, start=1):
+                print(f'    {i}. {cat} ({score:.2f})')
+
+        print(
+            '\nOptions: [n]ext, [p]rev, [c]onfirm, [1-9]=pick, [e]dit field, '
+            '[d]elete, [s]plit, [a]dd, [q]uit'
+        )
+        choice = input('> ').strip().lower()
+
+        # --- Navigation ---
+        if choice in ('n', 'next'):
+            idx += 1
+            continue
+        elif choice in ('p', 'prev'):
+            idx = max(0, idx - 1)
+            continue
+        elif choice in ('q', 'quit'):
+            break
+
+        # --- Confirm / Categorize ---
+        elif choice in ('c', 'confirm') and suggested_cat:
+            category = suggested_cat
+            update = {'type': 'update', 'id': tid, 'category': category}
+            write_update(update, args, updates)
+            known.append({'description': desc, 'category': category})
+            idx += 1
+            continue
+
+        elif choice.isdigit():
+            sel = int(choice) - 1
+            if 0 <= sel < len(suggestions):
+                category = suggestions[sel][0]
+                update = {'type': 'update', 'id': tid, 'category': category}
+                write_update(update, args, updates)
+                known.append({'description': desc, 'category': category})
+                idx += 1
+                continue
+
+        # --- Edit arbitrary fields ---
+        elif choice in ('e', 'edit'):
+            field = input(
+                'Field to edit (date, amount, account, description, category): '
+            ).strip()
+            if not field:
+                continue
+            value = input(f'Enter new value for {field}: ').strip()
+            if value:
+                update = {'type': 'update', 'id': tid, field: value}
+                write_update(update, args, updates)
+                if field == 'category':
+                    known.append({'description': desc, 'category': value})
+            idx += 1
+            continue
+
+        # --- Delete transaction ---
+        elif choice in ('d', 'delete'):
+            confirm = input('Delete this transaction? [y/N]: ').strip().lower()
+            if confirm == 'y':
+                update = {'type': 'delete', 'id': tid}
+                write_update(update, args, updates)
+                print('Marked for deletion.')
+            idx += 1
+            continue
+
+        # --- Split transaction ---
+        elif choice in ('s', 'split'):
+            num_parts = input('How many parts to split into? ').strip()
+            try:
+                num_parts = int(num_parts)
+            except ValueError:
+                print('Invalid number.')
+                continue
+
+            amounts = []
+            for i in range(num_parts):
+                amt = input(f'  Amount for part {i + 1}: ').strip()
+                cat = input(f'  Category for part {i + 1}: ').strip()
+                try:
+                    amt = float(amt)
+                except ValueError:
+                    print('Invalid amount, skipping part.')
+                    continue
+                amounts.append({'amount': amt, 'category': cat})
+
+            total_split = sum(a['amount'] for a in amounts)
+            orig_amt = float(txn.get('amount', 0))
+            if abs(total_split - orig_amt) > 0.01:
+                print(
+                    f'ERROR: split total {total_split:.2f} does not match original {orig_amt:.2f}'
+                )
+                continue
+
+            update = {'type': 'split', 'id': tid, 'splits': json.dumps(amounts)}
+            write_update(update, args, updates)
+            print('Split recorded.')
+            idx += 1
+            continue
+
+        # --- Add new transaction ---
+        elif choice in ('a', 'add'):
+            new_txn = {}
+            for field in ['date', 'description', 'amount', 'account', 'category']:
+                val = input(f'{field.capitalize()}: ').strip()
+                new_txn[field] = val
+            new_txn['type'] = 'add'
+            write_update(new_txn, args, updates)
+            txns.insert(idx + 1, new_txn)
+            print('New transaction added.')
+            idx += 1
+            continue
+
+        else:
+            print('Invalid choice.')
+
+    print('\nDone editing transactions.')
+
+
 def process_interactive(args, txns: List[dict], reference: List[dict]):
     updates: List[dict] = []
     known = reference[:]
@@ -183,4 +329,5 @@ def run(args: argparse.Namespace) -> None:
             update = {'type': 'update', 'id': tid, 'category': category}
             write_update(update, args, updates)
     else:
-        process_interactive(args, txns, reference)
+        # process_interactive(args, txns, reference)
+        process_edit_interactive(args, txns, reference)

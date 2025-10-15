@@ -1,6 +1,6 @@
 import argparse
 import sys
-from . import normalize, split, apply, report, init, categorize
+from . import normalize, split, apply, report, init, categorize, convert
 
 
 def main(argv=None) -> None:
@@ -37,6 +37,11 @@ def main(argv=None) -> None:
 
     report_parser = subparsers.add_parser('report', help='Generate budget reports')
     report.setup_parser(report_parser)
+
+    convert_parser = subparsers.add_parser(
+        'convert', help='Convert or reformat CSV files'
+    )
+    convert.setup_parser(convert_parser)
 
     args = parser.parse_args(argv)
     args.func(args)
