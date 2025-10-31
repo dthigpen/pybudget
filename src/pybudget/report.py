@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+import copy
 import csv
 import json
 import sys
@@ -18,7 +19,7 @@ from collections import defaultdict, namedtuple
 import itertools
 import io
 
-from pybudget import util
+from pybudget import util, aligned_csv
 
 # for txt formatted report
 try:
@@ -35,9 +36,7 @@ BudgetEntry = Dict[str, Any]
 
 def read_csv_or_json(path: Path) -> list[dict]:
     def read_csv(p):
-        with open(p, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            return list(reader)
+        return aligned_csv.read_aligned_csv(path)
 
     def read_json(p):
         with open(path, encoding='utf-8') as f:
@@ -200,8 +199,8 @@ def compute_summary(report: dict) -> dict:
     Compute summary totals from the structured report.
     Returns a dict with Income, Expenses, Cash flow, Uncategorized, Unbudgeted.
     """
-    income = report['income']['total']
-    expenses = report['expenses']['total']
+    income = abs(report['income']['total'])
+    expenses = abs(report['expenses']['total'])
     uncategorized = report['uncategorized']['total']
     unbudgeted = report['unbudgeted']['total']
 
@@ -215,6 +214,18 @@ def compute_summary(report: dict) -> dict:
 
 
 def write_txt_report(report: dict, out: TextIO) -> None:
+    
+    report = copy.deepcopy(report)
+
+    # sign is implied by context with these
+    # recalculate the variance
+    for cat_type in ('income', 'expenses'):
+        for cat in report[cat_type]['categories']:
+            cat['actual'] = abs(cat['actual'])
+            cat['variance'] = cat['actual'] - cat['budget']
+    report['income']['total'] = abs(report['income']['total'])
+    report['expenses']['total'] = abs(report['expenses']['total'])
+
     period = report['period']
     out.write(f'\nBudget Report for {period}\n')
     out.write('=' * (len(period) + 17) + '\n\n')
@@ -265,9 +276,9 @@ def write_txt_report(report: dict, out: TextIO) -> None:
                 fund_rows,
                 headers=[
                     'Name',
-                    'Start',
+                    'Start Bal.',
                     'Actual',
-                    'End',
+                    'End Bal.',
                     'Goal',
                     'Reconcile',
                     'Notes',
@@ -351,8 +362,6 @@ def write_json_report(report: dict, out: TextIO) -> None:
     """
     Write the report to JSON, including the computed summary.
     """
-    import copy
-
     enriched_report = copy.deepcopy(report)
     enriched_report['summary'] = compute_summary(report)
     # remove txns
@@ -509,13 +518,12 @@ def init_budget(
 
 def setup_parser(parser: argparse.ArgumentParser) -> None:
     """Add report-specific arguments to a parser."""
-    # --- report subcommand (existing) ---
-    # report_parser = subparsers.add_parser('report', help='Generate budget report')
     parser.add_argument(
-        '--budget',
+        '--budgets',
         required=True,
+        nargs='+',
         type=util.existing_file,
-        help='Budget JSON or CSV file',
+        help='Budget JSON or CSV files',
     )
     parser.add_argument(
         '--transactions', required=True, nargs='+', help='Transaction CSV file(s)'
@@ -526,63 +534,48 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
         default='txt',
         help='Output format (default: txt)',
     )
-    parser.add_argument('--output', default='-', help='Output path (default: stdout)')
-    #
-    #     # --- init subcommand (new) ---
-    #     init_parser = subparsers.add_parser('init', help='Initialize a budget file')
-    #     init_parser.add_argument(
-    #         '--period', required=True, help='Period to initialize (YYYY-MM)'
-    #     )
-    #     init_parser.add_argument(
-    #         '--from-report',
-    #         type=existing_file,
-    #         help='Optional prior report (CSV or JSON) to base new budget on',
-    #     )
-    #     init_parser.add_argument(
-    #         '--format',
-    #         choices=['json', 'csv'],
-    #         default='json',
-    #         help='Output format (default: json)',
-    #     )
-    #     init_parser.add_argument(
-    #         '--output', default='-', help='Output file (default: stdout)'
-    #     )
+    parser.add_argument(
+        '--output-dir', default='-', help='Output path (default: stdout)'
+    )
     parser.set_defaults(func=run)
 
 
 def run(args: argparse.Namespace) -> None:
-    budget = read_budget(args.budget)
-    # should handle period more intelligently, like generating reports for all periods in the budget
-    # for now just allow one
-    all_periods = set(r['period'] for r in budget)
-    if len(all_periods) > 1:
-        util.eprint(
-            f'Budget must contain only one period (for now). Periods: {all_periods}'
+    for budget_path in args.budgets:
+        budget = read_budget(budget_path)
+        # should handle period more intelligently, like generating reports for all periods in the budget
+        # for now just allow one
+        all_periods = set(r['period'] for r in budget)
+        if len(all_periods) > 1:
+            util.eprint(
+                f'Budget must contain only one period (for now). Periods: {all_periods}'
+            )
+            exit(1)
+        period = list(all_periods)[0]
+
+        transactions = read_transactions(args.transactions, period=period)
+
+        aggregated = aggregate(transactions, budget, period)
+        is_stdout = args.output_dir == '-'
+        output_path = (
+            None
+            if is_stdout
+            else Path(args.output_dir) / f'{period}-budget-report.{args.format}'
         )
-        exit(1)
-    period = list(all_periods)[0]
-
-    transactions = read_transactions(args.transactions, period=period)
-
-    aggregated = aggregate(transactions, budget, period)
-
-    if args.format == 'txt':
-        write_txt_report(
-            aggregated, sys.stdout if args.output == '-' else open(args.output, 'w')
-        )
-    elif args.format == 'csv':
-        write_csv_report(
-            aggregated,
-            sys.stdout if args.output == '-' else open(args.output, 'w', newline=''),
-        )
-    elif args.format == 'json':
-        out = sys.stdout if args.output == '-' else open(args.output, 'w')
-        write_json_report(aggregated, out)
-    else:
-        raise ValueError(f'Unsupported format: {args.format}')
-
-    # elif args.command == 'init':
-    #     init_budget(args.period, args.output, fmt=args.format, from_report=args.from_report)
+        if args.format == 'txt':
+            write_txt_report(
+                aggregated, sys.stdout if is_stdout else open(output_path, 'w')
+            )
+        elif args.format == 'csv':
+            write_csv_report(
+                aggregated,
+                sys.stdout if is_stdout else open(output_path, 'w', newline=''),
+            )
+        elif args.format == 'json':
+            out = sys.stdout if is_stdout else open(output_path, 'w')
+            write_json_report(aggregated, out)
+        else:
+            raise ValueError(f'Unsupported format: {args.format}')
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
